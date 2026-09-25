@@ -2,6 +2,8 @@
 import type { FeedStatus } from "../market/types.js";
 import type { RadarRow } from "../signals/engine.js";
 
+export type RunMode = "RADAR" | "PAPER";
+
 export interface FeedHealth {
   healthy: boolean;
   reason: string | null;
@@ -14,7 +16,7 @@ export interface RadarSnapshot {
   ts: number;
   /** Market time used for the evaluation (exchange clock). */
   evaluatedAt: number;
-  mode: "RADAR";
+  mode: RunMode;
   health: FeedHealth;
   rows: RadarRow[];
   opportunities: number;
@@ -22,7 +24,7 @@ export interface RadarSnapshot {
 }
 
 export interface StatusResponse {
-  mode: "RADAR";
+  mode: RunMode;
   startedAt: number;
   feed: FeedStatus;
   health: FeedHealth;

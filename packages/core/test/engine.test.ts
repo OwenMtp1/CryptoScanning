@@ -48,7 +48,7 @@ describe("SignalEngine", () => {
     expect(opp.productId).toBe("SOL-EUR");
     expect(opp.tradable).toBe(true);
     expect(opp.score).toBeGreaterThanOrEqual(65);
-    expect(opp.suggestedAction).toMatch(/RADAR/);
+    expect(opp.suggestedAction).toMatch(/Risk Engine/);
     expect(opp.reasons.join(" ")).toMatch(/sur 1m/);
     expect(r.rows[0]!.level).toBe("opportunity");
   });

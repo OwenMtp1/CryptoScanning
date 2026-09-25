@@ -88,6 +88,7 @@ export function ctx(o: Partial<RiskContext> & { cfg?: TradingConfig; positions?:
     capital: capitalBreakdown(pf, positions, cfg.portfolio),
     openPositions: positions,
     pendingProductIds: new Set(),
+    pendingEntries: { count: 0, quote: 0 },
     product: product("SOL-EUR", { quoteMinSize: 1, baseMinSize: 0.001 }),
     metrics: metrics("SOL-EUR"),
     feed: { healthy: true, reason: null, state: "open" },

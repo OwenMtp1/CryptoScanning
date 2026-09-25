@@ -72,6 +72,8 @@ export interface ProductFilterOptions {
   quoteCurrencies: string[];
   /** Keep at most N products, ranked by 24h quote volume. 0 = unlimited. */
   maxProducts: number;
+  /** Always included when eligible, even outside quoteCurrencies or the cap (e.g. BTC-EUR for valuation). */
+  required?: string[];
 }
 
 export interface ProductFilterResult {
@@ -102,7 +104,9 @@ export function filterRadarProducts(products: Product[], opts: ProductFilterOpti
     alias_duplicate: 0,
   };
   const quotes = new Set(opts.quoteCurrencies.map((q) => q.toUpperCase()));
+  const required = new Set(opts.required ?? []);
   const eligible: Product[] = [];
+  const requiredEligible: Product[] = [];
   for (const p of products) {
     let reason: ProductRejectReason | null = null;
     if (p.productType !== "SPOT") reason = "not_spot";
@@ -112,7 +116,8 @@ export function filterRadarProducts(products: Product[], opts: ProductFilterOpti
     else if (p.flags.viewOnly) reason = "view_only";
     else if (p.flags.auctionMode) reason = "auction_mode";
     else if (quotes.size > 0 && !quotes.has(p.quoteCurrency.toUpperCase())) reason = "quote_not_allowed";
-    if (reason) rejected[reason]++;
+    if (reason === "quote_not_allowed" && required.has(p.productId)) requiredEligible.push(p);
+    else if (reason) rejected[reason]++;
     else eligible.push(p);
   }
 
@@ -129,5 +134,8 @@ export function filterRadarProducts(products: Product[], opts: ProductFilterOpti
 
   deduped.sort((a, b) => (b.volume24hQuote ?? 0) - (a.volume24hQuote ?? 0));
   const selected = opts.maxProducts > 0 ? deduped.slice(0, opts.maxProducts) : deduped;
+  for (const p of [...deduped, ...requiredEligible]) {
+    if (required.has(p.productId) && !selected.includes(p)) selected.push(p);
+  }
   return { selected, rejected, eligibleBeforeCap: deduped.length };
 }

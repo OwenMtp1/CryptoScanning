@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
-import { SignalConfigSchema, type SignalConfig } from "@radar/core";
+import { SignalConfigSchema, TradingConfigSchema, type SignalConfig, type TradingConfig } from "@radar/core";
 
 export const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../..");
 
@@ -17,7 +17,7 @@ const csv = z
 export const EnvSchema = z.object({
   HOST: z.string().default("127.0.0.1"),
   PORT: z.coerce.number().int().min(1).max(65535).default(4000),
-  /** Only RADAR is implemented. PAPER/LIVE are refused at startup. */
+  /** RADAR (observe) or PAPER (simulated trading). LIVE is refused at startup. */
   MODE: z.string().default("RADAR"),
   DATA_SOURCE: z.enum(["simulated", "coinbase"]).default("simulated"),
   QUOTE_CURRENCIES: csv.default(["EUR", "USDC"]),
@@ -34,6 +34,8 @@ export const EnvSchema = z.object({
   SIM_TICK_MS: z.coerce.number().int().min(50).max(5000).default(250),
   LOG_DIR: z.string().default("data/logs"),
   SIGNAL_CONFIG_FILE: z.string().default("config/signal-config.json"),
+  TRADING_CONFIG_FILE: z.string().default("config/trading.json"),
+  PAPER_DATA_DIR: z.string().default("data/paper"),
   /** Comma-separated list of dashboard origins allowed by CORS. */
   DASHBOARD_ORIGINS: z
     .string()
@@ -41,7 +43,7 @@ export const EnvSchema = z.object({
     .default(["http://localhost:3000", "http://127.0.0.1:3000"]),
 });
 
-export type Env = z.infer<typeof EnvSchema> & { logDir: string; signalConfigPath: string };
+export type Env = z.infer<typeof EnvSchema> & { logDir: string; signalConfigPath: string; tradingConfigPath: string; paperDataDir: string };
 
 export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
   const env = EnvSchema.parse(source);
@@ -49,6 +51,8 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
     ...env,
     logDir: path.resolve(REPO_ROOT, env.LOG_DIR),
     signalConfigPath: path.resolve(REPO_ROOT, env.SIGNAL_CONFIG_FILE),
+    tradingConfigPath: path.resolve(REPO_ROOT, env.TRADING_CONFIG_FILE),
+    paperDataDir: path.resolve(REPO_ROOT, env.PAPER_DATA_DIR),
   };
 }
 
@@ -61,4 +65,15 @@ export function loadSignalConfig(file: string): { config: SignalConfig; source: 
     return { config: SignalConfigSchema.parse({}), source: "defaults" };
   }
   return { config: SignalConfigSchema.parse(JSON.parse(raw)), source: "file" };
+}
+
+/** Load the trading configuration file (optional). Invalid files are a hard error. */
+export function loadTradingConfig(file: string): { config: TradingConfig; source: "file" | "defaults" } {
+  let raw: string;
+  try {
+    raw = readFileSync(file, "utf8");
+  } catch {
+    return { config: TradingConfigSchema.parse({}), source: "defaults" };
+  }
+  return { config: TradingConfigSchema.parse(JSON.parse(raw)), source: "file" };
 }

@@ -1,4 +1,4 @@
-import { SignalEngine, type Opportunity, type RadarSnapshot, type Signal, type SignalConfig } from "@radar/core";
+import { SignalEngine, type Opportunity, type RadarSnapshot, type RunMode, type Signal, type SignalConfig } from "@radar/core";
 import type { LogFn } from "../market-data/source.js";
 import type { MarketDataEngine } from "../market-data/market-data-engine.js";
 
@@ -24,6 +24,7 @@ export class RadarService {
     config: SignalConfig,
     private readonly log: LogFn,
     private readonly intervalMs: number,
+    private readonly mode: RunMode = "RADAR",
   ) {
     this.engine = new SignalEngine(config);
   }
@@ -61,7 +62,7 @@ export class RadarService {
         level: "info",
         productId: o.productId,
         success: o.tradable,
-        message: `${o.productId} score ${o.score} — ${o.tradable ? "liquidité OK" : `NON TRADABLE : ${o.liquidityIssues.join(", ")}`} — ${o.suggestedAction}`,
+        message: `${o.productId} score ${o.score} — ${o.tradable ? "liquidité OK" : `NON TRADABLE : ${o.liquidityIssues.join(", ")}`}`,
         data: { opportunityId: o.id, score: o.score, scores: o.scores, price: o.price, reasons: o.reasons, signals: o.signals },
       });
     }
@@ -85,7 +86,7 @@ export class RadarService {
     const snap: RadarSnapshot = {
       ts: Date.now(),
       evaluatedAt,
-      mode: "RADAR",
+      mode: this.mode,
       health,
       rows: r.rows,
       opportunities: this.engine.activeOpportunities().length,

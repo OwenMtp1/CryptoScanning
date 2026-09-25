@@ -1,13 +1,14 @@
 import { createApiServer } from "./api/http-server.js";
-import { loadEnv, loadSignalConfig } from "./config/env.js";
+import { loadEnv, loadSignalConfig, loadTradingConfig } from "./config/env.js";
 import { EventLog } from "./logging/event-log.js";
 import { CoinbaseMarketSource } from "./market-data/coinbase-source.js";
 import { MarketDataEngine } from "./market-data/market-data-engine.js";
 import { SimulatedMarketSource } from "./market-data/simulated-source.js";
 import type { MarketDataSource } from "./market-data/source.js";
 import { RadarService } from "./signal-engine/radar-service.js";
-
-const IMPLEMENTED_MODES = ["RADAR"];
+import { PaperStore } from "./trading/paper-store.js";
+import { TradingService } from "./trading/trading-service.js";
+import { IMPLEMENTED_MODES, parseMode } from "./config/mode.js";
 const PRODUCTS_RETRY_MS = 30_000;
 
 async function main() {
@@ -15,17 +16,13 @@ async function main() {
   const log = new EventLog({ dir: env.logDir });
   const emit = (e: Parameters<EventLog["emit"]>[0]) => void log.emit(e);
 
-  const mode = env.MODE.toUpperCase();
-  if (!IMPLEMENTED_MODES.includes(mode)) {
-    log.emit({
-      type: "MODE_CHANGE_REJECTED",
-      level: "error",
-      success: false,
-      message: `Mode ${mode} refusé : seule la phase 1 (RADAR, observation sans transaction) est implémentée.`,
-    });
+  const parsedMode = parseMode(env.MODE);
+  if (!parsedMode.ok) {
+    log.emit({ type: "MODE_CHANGE_REJECTED", level: "error", success: false, message: parsedMode.message });
     await log.close();
     process.exit(1);
   }
+  const mode = parsedMode.mode;
 
   const { config: signalConfig, source: configSource } = loadSignalConfig(env.signalConfigPath);
   log.emit({
@@ -33,6 +30,13 @@ async function main() {
     level: "info",
     message: `Configuration des signaux : ${configSource === "file" ? env.signalConfigPath : "valeurs par défaut"}`,
     data: { signalConfig },
+  });
+  const { config: tradingConfig, source: tradingSource } = loadTradingConfig(env.tradingConfigPath);
+  log.emit({
+    type: "CONFIG_LOADED",
+    level: "info",
+    message: `Configuration trading : ${tradingSource === "file" ? env.tradingConfigPath : "valeurs par défaut"} — ${tradingConfig.strategies.length} stratégie(s), frais taker ${tradingConfig.paper.takerFeePct} % (hypothèse)`,
+    data: { tradingConfig },
   });
 
   const source: MarketDataSource =
@@ -53,14 +57,33 @@ async function main() {
     log: emit,
     quoteCurrencies: env.QUOTE_CURRENCIES,
     maxProducts: env.MAX_PRODUCTS,
+    requiredProducts: TradingService.requiredProducts(tradingConfig),
   });
-  const radar = new RadarService(market, signalConfig, emit, env.EVAL_INTERVAL_MS);
+  const tradingMode = mode;
+  let trading: TradingService;
+  try {
+    trading = new TradingService({
+      mode: tradingMode,
+      config: tradingConfig,
+      market,
+      log: emit,
+      store: tradingMode === "PAPER" ? new PaperStore(env.paperDataDir) : null,
+    });
+  } catch (err) {
+    log.emit({ type: "API_ERROR", level: "error", success: false, message: `Démarrage du trading impossible : ${(err as Error).message}` });
+    await log.close();
+    process.exit(1);
+  }
+  const radar = new RadarService(market, signalConfig, emit, env.EVAL_INTERVAL_MS, tradingMode);
+  // Trading runs first on each snapshot so the dashboard stream sees fresh state.
+  radar.subscribe((snap) => trading.onSnapshot(snap));
   const startedAt = Date.now();
 
   const server = createApiServer({
     log,
     market,
     radar,
+    trading,
     allowedOrigins: env.DASHBOARD_ORIGINS,
     startedAt,
     publicConfig: () => ({
@@ -72,6 +95,8 @@ async function main() {
       evalIntervalMs: env.EVAL_INTERVAL_MS,
       signalConfig,
       signalConfigSource: configSource,
+      tradingConfig,
+      tradingConfigSource: tradingSource,
       coinbase: {
         restBaseUrl: env.COINBASE_REST_BASE_URL,
         wsUrl: env.COINBASE_WS_URL,

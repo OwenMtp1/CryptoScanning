@@ -52,7 +52,7 @@ export interface Opportunity {
   reasons: string[];
   signals: SignalType[];
   metrics: ProductMetrics;
-  /** Phase 1: the radar only observes. */
+  /** The Signal Engine never acts: actions are proposed by strategies and checked by the Risk Engine. */
   suggestedAction: string;
 }
 
@@ -211,7 +211,7 @@ export class SignalEngine {
             reasons,
             signals: [...new Set(conds.map((c) => c.type))],
             metrics: m,
-            suggestedAction: "Aucune — mode RADAR (observation seule)",
+            suggestedAction: "Décision du Strategy Engine puis du Risk Engine",
           };
           this.active.set(m.productId, opp);
           res.opened.push(opp);

@@ -7,6 +7,8 @@ import { EventLog } from "../src/logging/event-log.js";
 import { MarketDataEngine } from "../src/market-data/market-data-engine.js";
 import { SimulatedMarketSource } from "../src/market-data/simulated-source.js";
 import { RadarService } from "../src/signal-engine/radar-service.js";
+import { TradingService } from "../src/trading/trading-service.js";
+import { defaultTradingConfig } from "@radar/core";
 
 let base = "";
 let close: () => void;
@@ -19,11 +21,14 @@ beforeAll(async () => {
   await market.loadProducts();
   market.start();
   const radar = new RadarService(market, cfg, emit, 1000);
+  const trading = new TradingService({ mode: "RADAR", config: defaultTradingConfig(), market, log: emit, store: null });
+  radar.subscribe((s) => trading.onSnapshot(s));
   radar.tick();
   const server = createApiServer({
     log,
     market,
     radar,
+    trading,
     allowedOrigins: ["http://localhost:3000"],
     startedAt: Date.now(),
     publicConfig: () => ({ mode: "RADAR", coinbase: { apiSecret: "should-not-leak" } }),
@@ -64,8 +69,28 @@ describe("HTTP API", () => {
     expect(text).not.toContain("should-not-leak");
   });
 
-  it("is read-only and rejects unknown hosts (DNS rebinding)", async () => {
-    expect((await fetch(`${base}/api/status`, { method: "POST" })).status).toBe(405);
+  it("serves the trading view", async () => {
+    const v = (await (await fetch(`${base}/api/trading`)).json()) as any;
+    expect(v).toMatchObject({ mode: "RADAR", executionEnabled: false });
+    expect(v.strategies[0].id).toBe("bump-momentum");
+  });
+
+  it("protects POST controls: action header, origin, JSON, schema", async () => {
+    const post = (path: string, body: unknown, h: Record<string, string> = {}) =>
+      fetch(`${base}${path}`, { method: "POST", headers: { "content-type": "application/json", "x-radar-action": "confirm", ...h }, body: JSON.stringify(body) });
+    expect((await fetch(`${base}/api/trading/emergency-stop`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" })).status).toBe(403);
+    expect((await post("/api/trading/emergency-stop", {}, { origin: "http://attacker.example" })).status).toBe(403);
+    expect((await post("/api/trading/resume", { confirm: "yes" })).status).toBe(400);
+    expect((await post("/api/trading/reset", { confirm: "RESET" })).status).toBe(409); // RADAR mode
+    const stop = (await (await post("/api/trading/emergency-stop", { reason: "test" }, { origin: "http://localhost:3000" })).json()) as any;
+    expect(stop.view.emergencyStop).toMatchObject({ id: "EMERGENCY_STOP", reason: "test" });
+    const resumed = (await (await post("/api/trading/resume", { confirm: "RESUME" })).json()) as any;
+    expect(resumed.view.emergencyStop).toBeNull();
+    expect((await post("/api/nope", {})).status).toBe(404);
+  });
+
+  it("rejects unknown methods and unknown hosts (DNS rebinding)", async () => {
+    expect((await fetch(`${base}/api/status`, { method: "PUT" })).status).toBe(405);
     expect((await fetch(`${base}/api/nope`)).status).toBe(404);
     const { request } = await import("node:http");
     const status = await new Promise<number>((resolve) => {

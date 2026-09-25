@@ -49,6 +49,14 @@ describe("filterRadarProducts", () => {
     expect(r.eligibleBeforeCap).toBe(3);
   });
 
+  it("always includes required products when eligible", () => {
+    const r = filterRadarProducts(
+      [product("A-USDC", { volume24hQuote: 9 }), product("BTC-EUR", { volume24hQuote: 1 }), product("OFF-EUR", { status: "offline" })],
+      { quoteCurrencies: ["USDC"], maxProducts: 1, required: ["BTC-EUR", "OFF-EUR"] },
+    );
+    expect(r.selected.map((p) => p.productId)).toEqual(["A-USDC", "BTC-EUR"]);
+  });
+
   it("drops one-way alias duplicates but never both sides of a mutual alias", () => {
     const oneWay = filterRadarProducts([product("BTC-USD"), product("BTC-USDC", { alias: "BTC-USD" })], { quoteCurrencies: [], maxProducts: 0 });
     expect(oneWay.selected.map((p) => p.productId)).toEqual(["BTC-USD"]);

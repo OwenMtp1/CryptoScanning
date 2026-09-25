@@ -17,6 +17,8 @@ export interface MarketDataEngineOptions {
   log: LogFn;
   quoteCurrencies: string[];
   maxProducts: number;
+  /** Products always tracked when eligible (e.g. BTC-EUR / ETH-EUR for valuation and rotation). */
+  requiredProducts?: string[];
   now?: () => number;
 }
 
@@ -51,7 +53,11 @@ export class MarketDataEngine {
   /** Load and filter the product list (dynamic, never hard-coded). */
   async loadProducts(): Promise<ProductFilterResult> {
     const { products, invalid } = await this.opts.source.loadProducts();
-    const filter = filterRadarProducts(products, { quoteCurrencies: this.opts.quoteCurrencies, maxProducts: this.opts.maxProducts });
+    const filter = filterRadarProducts(products, {
+      quoteCurrencies: this.opts.quoteCurrencies,
+      maxProducts: this.opts.maxProducts,
+      required: this.opts.requiredProducts,
+    });
     this.products = filter.selected;
     this.filter = filter;
     this.store.setProducts(filter.selected);

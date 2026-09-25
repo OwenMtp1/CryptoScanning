@@ -35,6 +35,8 @@ export interface RiskContext {
   openPositions: Position[];
   /** Products with an order in flight. */
   pendingProductIds: ReadonlySet<string>;
+  /** Entry orders in flight (not yet positions) — counted against limits. */
+  pendingEntries: { count: number; quote: number };
   product: Product | undefined;
   metrics: ProductMetrics | undefined;
   feed: { healthy: boolean; reason: string | null; state: FeedConnectionState };
@@ -159,22 +161,29 @@ function entryChecks(intent: OrderIntent, ctx: RiskContext, add: Add) {
   const r = ctx.config.risk;
   const q = intent.quoteSize ?? 0;
   const cap = ctx.capital;
+  const pend = ctx.pendingEntries;
   blockingChecks(ctx, add);
   marketChecks(intent, ctx, add, true);
   add("max_trade_size", q > 0 && q <= r.maxTradeQuote, `montant ${f2(q)} (max ${r.maxTradeQuote})`);
   minSizeCheck(intent, ctx, add);
-  add("capital_available", q <= cap.available + 1e-9, `montant ${f2(q)}, capital disponible ${f2(cap.available)} (liquidités ${f2(cap.cash)})`);
-  const headroom = cap.tradable - cap.engaged - q;
+  add(
+    "capital_available",
+    q + pend.quote <= cap.available + 1e-9,
+    `montant ${f2(q)}${pend.quote > 0 ? ` + ${f2(pend.quote)} en cours` : ""}, capital disponible ${f2(cap.available)} (liquidités ${f2(cap.cash)})`,
+  );
+  const headroom = cap.tradable - cap.engaged - pend.quote - q;
   add(
     "protected_capital",
     headroom >= -1e-9,
-    `après l'ordre : total ${f2(cap.total)} − protégé ${f2(cap.protected)} − engagé ${f2(cap.engaged + q)} = ${f2(headroom)} (doit rester ≥ 0)`,
+    `après l'ordre : total ${f2(cap.total)} − protégé ${f2(cap.protected)} − engagé ${f2(cap.engaged + pend.quote + q)} = ${f2(headroom)} (doit rester ≥ 0)`,
   );
-  add("max_positions", ctx.openPositions.length < r.maxOpenPositions, `${ctx.openPositions.length} position(s) ouverte(s) (max ${r.maxOpenPositions})`);
+  const nPos = ctx.openPositions.length + pend.count;
+  add("max_positions", nPos < r.maxOpenPositions, `${ctx.openPositions.length} position(s) ouverte(s)${pend.count ? ` + ${pend.count} en cours` : ""} (max ${r.maxOpenPositions})`);
   const base = ctx.product?.baseCurrency ?? intent.productId.split("-")[0];
   const assetExp = ctx.openPositions.filter((p) => p.baseCurrency === base).reduce((s, p) => s + positionValue(ctx.portfolio, p), 0);
   add("exposure_asset", assetExp + q <= r.maxExposurePerAssetQuote + 1e-9, `exposition ${base} ${f2(assetExp + q)} après l'ordre (max ${r.maxExposurePerAssetQuote})`);
-  add("exposure_total", cap.engaged + q <= r.maxTotalExposureQuote + 1e-9, `exposition totale ${f2(cap.engaged + q)} après l'ordre (max ${r.maxTotalExposureQuote})`);
+  const totalExp = cap.engaged + pend.quote + q;
+  add("exposure_total", totalExp <= r.maxTotalExposureQuote + 1e-9, `exposition totale ${f2(totalExp)} après l'ordre (max ${r.maxTotalExposureQuote})`);
   const day = lossUsed(ctx.history.realizedPnl24h, ctx.openPositions, ctx.config);
   add("daily_loss", day < r.maxDailyLossQuote, `perte 24 h ${f2(day)} (limite ${r.maxDailyLossQuote})`);
   const week = lossUsed(ctx.history.realizedPnl7d, ctx.openPositions, ctx.config);
@@ -201,7 +210,8 @@ function rotationChecks(intent: OrderIntent, ctx: RiskContext, add: Add) {
   blockingChecks(ctx, add);
   marketChecks(intent, ctx, add, true);
   minSizeCheck(intent, ctx, add);
-  add("capital_available", q > 0 && q <= ctx.capital.cash + 1e-9, `montant ${f2(q)}, liquidités ${f2(ctx.capital.cash)}`);
+  const reserved = ctx.pendingEntries.quote;
+  add("capital_available", q > 0 && q + reserved <= ctx.capital.cash + 1e-9, `montant ${f2(q)}, liquidités ${f2(ctx.capital.cash)}${reserved ? ` (dont ${f2(reserved)} réservés)` : ""}`);
   add("previous_errors", ctx.history.consecutiveErrors < ctx.config.risk.maxConsecutiveErrors, `${ctx.history.consecutiveErrors} erreur(s) consécutive(s)`);
   add("duplicate_position", !ctx.pendingProductIds.has(intent.productId), ctx.pendingProductIds.has(intent.productId) ? "ordre déjà en cours sur ce produit" : "aucun ordre en cours");
 }

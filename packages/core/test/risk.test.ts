@@ -104,6 +104,11 @@ describe("Risk Engine — entries", () => {
     expect(failed(checkIntent(entry(), ctx({ pendingProductIds: new Set(["SOL-EUR"]) })))).toContain("duplicate_position");
   });
 
+  it("ATTACK: parallel entries — orders in flight count against capital and positions", () => {
+    const d = checkIntent(entry(), ctx({ pendingEntries: { count: 3, quote: 95 } }));
+    expect(failed(d)).toEqual(expect.arrayContaining(["capital_available", "max_positions", "exposure_total"]));
+  });
+
   it("emergency stop and circuit breakers block every entry", () => {
     const e = checkIntent(entry(), ctx({ emergencyStop: { active: true, reason: "manuel" } }));
     expect(failed(e)).toEqual(["emergency_stop"]);
