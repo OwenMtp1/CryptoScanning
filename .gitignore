@@ -1,0 +1,26 @@
+# Secrets — ne jamais committer
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+
+# Dependencies / build
+node_modules/
+dist/
+.next/
+out/
+coverage/
+
+# Local data
+data/
+*.sqlite
+*.db
+logs/
+*.log
+
+# OS / IDE
+.DS_Store
+.idea/
+.vscode/
