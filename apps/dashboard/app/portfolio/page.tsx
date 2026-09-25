@@ -7,6 +7,7 @@ import { Card, Stat } from "@/components/ui";
 import { getJson, postAction } from "@/lib/api";
 import { fmtDateTime, fmtDuration, fmtMoney, fmtPct, fmtPrice, pctClass } from "@/lib/format";
 import { useRadarStream } from "@/lib/stream";
+import { useDialogs } from "@/components/Dialogs";
 
 const EXIT_LABEL: Record<string, string> = {
   STOP_LOSS: "Stop loss",
@@ -17,6 +18,7 @@ const EXIT_LABEL: Record<string, string> = {
 
 export default function PortfolioPage() {
   const { trading, snapshot } = useRadarStream();
+  const { confirm, notify } = useDialogs();
   const [trades, setTrades] = useState<TradeRecord[]>([]);
   const [equity, setEquity] = useState<EquityPoint[]>([]);
   const tick = snapshot ? Math.floor(snapshot.ts / 5000) : 0;
@@ -33,11 +35,12 @@ export default function PortfolioPage() {
   const livePoints = trading.initialized ? [...equity, { ts: snapshot?.ts ?? Date.now(), total: c.total, tradingPnl: p.tradingPnl }] : equity;
 
   const reset = async () => {
-    if (window.prompt("Réinitialiser le portefeuille PAPER ? Tout l'historique paper sera effacé.\nTape RESET pour confirmer :") !== "RESET") return;
+    const r = await confirm({ title: "Réinitialiser le portefeuille paper ?", message: "Tout l'historique paper (trades, positions, courbe) sera effacé. L'emergency stop est conservé.", confirmLabel: "Réinitialiser", tone: "danger", requireText: "RESET" });
+    if (!r.ok) return;
     try {
       await postAction("/api/trading/reset", { confirm: "RESET" });
     } catch (e) {
-      window.alert(`Refusé : ${(e as Error).message}`);
+      notify(`Refusé : ${(e as Error).message}`, "error");
     }
   };
 
@@ -52,7 +55,7 @@ export default function PortfolioPage() {
         </Card>
       )}
       <div className="grid gap-4 lg:grid-cols-[1fr_1fr]">
-        <Card title={trading.executionEnabled ? "Portfolio bot (paper)" : "Portfolio virtuel"}>
+        <Card title={trading.executionEnabled ? "Portfolio bot (paper)" : "Portfolio virtuel"} className="min-w-0">
           {!trading.initialized ? (
             <p className="text-sm text-slate-500">En attente des prix : {trading.waitingFor.join(", ")}</p>
           ) : (
@@ -65,7 +68,8 @@ export default function PortfolioPage() {
                 <Stat label="Capital disponible" value={fmtMoney(c.available, cur)} tone="good" hint="max pour une entrée" />
                 <Stat label="Liquidités" value={fmtMoney(c.cash, cur)} />
               </div>
-              <table className="num mt-4 w-full text-sm">
+              <div className="mt-4 overflow-x-auto">
+              <table className="num w-full text-sm">
                 <thead className="text-left text-xs text-slate-500">
                   <tr>
                     <th className="py-1">Actif</th>
@@ -99,11 +103,12 @@ export default function PortfolioPage() {
                     ))}
                 </tbody>
               </table>
+              </div>
             </>
           )}
         </Card>
 
-        <Card title="Performance">
+        <Card title="Performance" className="min-w-0">
           <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
             <Stat label="P&L trading" value={fmtMoney(p.tradingPnl, cur, true)} tone={p.tradingPnl > 0.005 ? "good" : p.tradingPnl < -0.005 ? "bad" : "default"} hint={`réalisé ${fmtMoney(p.realizedPnl, cur, true)}`} />
             <Stat label="P&L %" value={fmtPct(trading.initialValue - c.protected > 0 ? (p.tradingPnl / (trading.initialValue - c.protected)) * 100 : null)} hint="vs capital tradable initial" />

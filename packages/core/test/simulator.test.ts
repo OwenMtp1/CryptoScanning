@@ -40,6 +40,17 @@ describe("MarketSimulator", () => {
     for (let t = T0; t < T0 + 20_000; t += 500) expect(a.step(t).frames).toEqual(b.step(t).frames);
   });
 
+  it("exports and restores prices to resume a simulation", () => {
+    const a = new MarketSimulator({ seed: 3, autoScenarios: false });
+    for (let t = T0; t < T0 + 60_000; t += 500) a.step(t);
+    const saved = a.exportPrices();
+    const b = new MarketSimulator({ seed: 99, autoScenarios: false });
+    b.importPrices({ ...saved, "NOPE-EUR": 1, "BTC-EUR": Number.NaN });
+    const restored = b.exportPrices();
+    expect(restored["SOL-EUR"]).toBe(saved["SOL-EUR"]);
+    expect(restored["BTC-EUR"]).toBe(95_000);
+  });
+
   it("produces frames that decode without issues", () => {
     const { issues } = run(3, 30, () => {});
     expect(issues).toBe(0);

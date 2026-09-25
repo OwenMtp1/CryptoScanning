@@ -5,6 +5,7 @@ import { CONDITION_METRICS, StrategySchema, type Condition } from "@radar/core/s
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Card } from "@/components/ui";
 import { getJson, postAction } from "@/lib/api";
+import { useDialogs } from "@/components/Dialogs";
 
 interface Limits {
   currency: string;
@@ -63,6 +64,7 @@ function Editor({ initial, isNew, limits, onSaved, onCancel }: { initial: Draft;
   const [preview, setPreview] = useState<StrategyPreview | null>(null);
   const [serverIssues, setServerIssues] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
+  const { confirm } = useDialogs();
   const cur = limits.currency;
 
   const local = useMemo(() => {
@@ -97,7 +99,7 @@ function Editor({ initial, isNew, limits, onSaved, onCancel }: { initial: Draft;
 
   const save = async () => {
     const warn = d.enabled && limits.mode === "PAPER" ? "\n\nCette stratégie est ACTIVE : elle pourra ouvrir des positions (paper) immédiatement." : "";
-    if (!window.confirm(`Enregistrer « ${d.name} » ?\n\n${summary(d, cur)}${warn}`)) return;
+    if (!(await confirm({ title: `Enregistrer « ${d.name} » ?`, message: `${summary(d, cur)}${warn}`, confirmLabel: "Enregistrer" })).ok) return;
     setSaving(true);
     try {
       await postAction("/api/strategies/save", { strategy: d });
@@ -320,6 +322,7 @@ export default function StrategiesPage() {
   const [limits, setLimits] = useState<Limits | null>(null);
   const [editing, setEditing] = useState<{ draft: Draft; isNew: boolean } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const { confirm, notify } = useDialogs();
 
   const load = useCallback(() => {
     getJson<{ strategies: Strategy[]; limits: Limits }>("/api/strategies").then(
@@ -337,7 +340,7 @@ export default function StrategiesPage() {
       await postAction(path, body);
       load();
     } catch (e) {
-      window.alert(`Refusé : ${(e as Error).message}`);
+      notify(`Refusé : ${(e as Error).message}`, "error");
     }
   };
 
@@ -388,8 +391,8 @@ export default function StrategiesPage() {
               </button>
               <button
                 className="rounded border border-slate-700 px-2 py-1 hover:bg-slate-800"
-                onClick={() => {
-                  if (!s.enabled && limits.mode === "PAPER" && !window.confirm(`Activer « ${s.name} » ? Elle pourra ouvrir des positions (paper).`)) return;
+                onClick={async () => {
+                  if (!s.enabled && limits.mode === "PAPER" && !(await confirm({ title: `Activer « ${s.name} » ?`, message: "Elle pourra ouvrir des positions (paper) dès maintenant.", confirmLabel: "Activer" })).ok) return;
                   void act("/api/strategies/toggle", { id: s.id, enabled: !s.enabled });
                 }}
               >
@@ -397,8 +400,9 @@ export default function StrategiesPage() {
               </button>
               <button
                 className="rounded border border-rose-900 px-2 py-1 text-rose-300 hover:bg-rose-950"
-                onClick={() => {
-                  if (window.prompt(`Supprimer « ${s.name} » ? Tape DELETE pour confirmer :`) === "DELETE") void act("/api/strategies/delete", { id: s.id, confirm: "DELETE" });
+                onClick={async () => {
+                  if ((await confirm({ title: `Supprimer « ${s.name} » ?`, message: "Refusé tant que des positions de cette stratégie sont ouvertes.", confirmLabel: "Supprimer", tone: "danger", requireText: "DELETE" })).ok)
+                    void act("/api/strategies/delete", { id: s.id, confirm: "DELETE" });
                 }}
               >
                 Supprimer

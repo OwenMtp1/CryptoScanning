@@ -40,12 +40,12 @@ export function Header() {
             {mode === "PAPER" ? "🟢 PAPER MODE" : "MODE RADAR"}
           </span>
         </div>
-        <nav className="flex gap-1">
+        <nav className="-mx-1 flex w-full gap-1 overflow-x-auto px-1 md:w-auto">
           {NAV.map((n) => (
             <Link
               key={n.href}
               href={n.href}
-              className={`rounded px-3 py-1.5 text-sm ${path === n.href ? "bg-slate-800 text-white" : "text-slate-400 hover:bg-slate-900 hover:text-slate-200"}`}
+              className={`shrink-0 whitespace-nowrap rounded px-3 py-1.5 text-sm ${path === n.href ? "bg-slate-800 text-white" : "text-slate-400 hover:bg-slate-900 hover:text-slate-200"}`}
             >
               {n.label}
             </Link>

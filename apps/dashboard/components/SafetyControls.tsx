@@ -4,20 +4,29 @@ import { useState } from "react";
 import { postAction } from "@/lib/api";
 import { fmtDateTime } from "@/lib/format";
 import { useRadarStream } from "@/lib/stream";
+import { useDialogs } from "./Dialogs";
 
 /** 🛑 EMERGENCY STOP button (always visible) and blocked-state banner. */
 export function EmergencyStopButton() {
   const { trading } = useRadarStream();
+  const { confirm, notify } = useDialogs();
   const [busy, setBusy] = useState(false);
   if (!trading || trading.emergencyStop) return null;
   const stop = async () => {
-    const reason = window.prompt("🛑 EMERGENCY STOP — aucune nouvelle position ne sera ouverte (les stops restent actifs).\nRaison (optionnelle) :", "arrêt manuel");
-    if (reason === null) return;
+    const r = await confirm({
+      title: "🛑 EMERGENCY STOP",
+      message: "Aucune nouvelle position ne sera ouverte. Les stops et trailing stops des positions ouvertes restent actifs.\nLa réactivation sera manuelle.",
+      confirmLabel: "Arrêter le bot",
+      tone: "danger",
+      input: "arrêt manuel",
+    });
+    if (!r.ok) return;
+    const reason = r.text.trim();
     setBusy(true);
     try {
       await postAction("/api/trading/emergency-stop", { reason: reason || "arrêt manuel" });
     } catch (e) {
-      window.alert(`Échec : ${(e as Error).message}`);
+      notify(`Échec : ${(e as Error).message}`, "error");
     } finally {
       setBusy(false);
     }
@@ -35,19 +44,24 @@ export function EmergencyStopButton() {
 
 export function BlockedBanner() {
   const { trading } = useRadarStream();
+  const { confirm, notify } = useDialogs();
   const [busy, setBusy] = useState(false);
   if (!trading || trading.breakers.length === 0) return null;
   const manual = trading.breakers.filter((b) => b.manualReset);
   const resume = async () => {
-    const typed = window.prompt(
-      `Réactiver les nouvelles entrées ?\nDisjoncteurs levés : ${manual.map((b) => b.id).join(", ")}\n(si la condition persiste, ils se redéclencheront)\n\nTape RESUME pour confirmer :`,
-    );
-    if (typed !== "RESUME") return;
+    const r = await confirm({
+      title: "Réactiver les nouvelles entrées ?",
+      message: `Disjoncteurs levés : ${manual.map((b) => b.id).join(", ")}.
+Si la condition persiste, ils se redéclencheront.`,
+      confirmLabel: "Réactiver",
+      requireText: "RESUME",
+    });
+    if (!r.ok) return;
     setBusy(true);
     try {
       await postAction("/api/trading/resume", { confirm: "RESUME" });
     } catch (e) {
-      window.alert(`Échec : ${(e as Error).message}`);
+      notify(`Échec : ${(e as Error).message}`, "error");
     } finally {
       setBusy(false);
     }

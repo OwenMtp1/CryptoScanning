@@ -6,6 +6,8 @@ export interface SimulatedSourceOptions {
   tickMs: number;
   log: LogFn;
   autoScenarios?: boolean;
+  /** Resume from saved prices (demo continuity). */
+  initialPrices?: Record<string, number>;
 }
 
 /**
@@ -21,6 +23,7 @@ export class SimulatedMarketSource implements MarketDataSource {
 
   constructor(private readonly opts: SimulatedSourceOptions) {
     this.sim = new MarketSimulator({ seed: opts.seed, autoScenarios: opts.autoScenarios ?? true });
+    if (opts.initialPrices) this.sim.importPrices(opts.initialPrices);
   }
 
   async loadProducts(): Promise<ProductsLoadResult> {
@@ -49,6 +52,10 @@ export class SimulatedMarketSource implements MarketDataSource {
     };
     tick();
     this.timer = setInterval(tick, this.opts.tickMs);
+  }
+
+  exportPrices(): Record<string, number> {
+    return this.sim.exportPrices();
   }
 
   /** Manually trigger a scenario (dev tooling / tests). */

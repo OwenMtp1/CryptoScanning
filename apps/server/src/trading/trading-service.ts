@@ -51,8 +51,18 @@ import {
 } from "@radar/core";
 import type { MarketDataEngine } from "../market-data/market-data-engine.js";
 import type { LogFn } from "../market-data/source.js";
-import type { PaperStateFile, PaperStore } from "./paper-store.js";
-import type { StrategyStore } from "./strategy-store.js";
+import type { PaperStateFile } from "./paper-state.js";
+
+/** Persistence of the paper state (file on the server, account/browser storage in the demo). */
+export interface PaperStateStore {
+  load(): PaperStateFile | null;
+  save(state: PaperStateFile): void;
+}
+/** Persistence of Strategy Builder strategies. */
+export interface StrategyStoreLike {
+  load(): Strategy[] | null;
+  save(strategies: Strategy[]): void;
+}
 
 export type TradingMode = RunMode;
 
@@ -62,9 +72,9 @@ export interface TradingServiceOptions {
   market: MarketDataEngine;
   log: LogFn;
   /** Persistence (PAPER only). */
-  store: PaperStore | null;
+  store: PaperStateStore | null;
   /** Strategies edited in the Strategy Builder (overrides config strategies when the file exists). */
-  strategyStore?: StrategyStore | null;
+  strategyStore?: StrategyStoreLike | null;
   now?: () => number;
   /** Products available to the connected Coinbase account (null = public mode). */
   accountProducts?: () => ReadonlySet<string> | null;

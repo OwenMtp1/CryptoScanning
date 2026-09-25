@@ -112,7 +112,7 @@ export default function SettingsPage() {
                   v={p ? `View ${p.canView ? "✓" : "✗"} · Trade ${p.canTrade ? "✓" : "✗"} · Transfer ${p.canTransfer ? "⚠ OUI" : "✗ (bien)"}` : "—"}
                 />
                 <Row k="Portfolio" v={p ? `${p.portfolioType ?? "?"} ${p.portfolioUuid ? `(${p.portfolioUuid.slice(0, 8)}…)` : ""}` : "—"} />
-                <Row k="Soldes" v={a?.balances.length ? a.balances.map((b) => `${b.available} ${b.currency}`).join(" · ") : "—"} />
+                <Row k="Soldes" v={a?.balances?.length ? a.balances.map((b) => `${b.available} ${b.currency}`).join(" · ") : "—"} />
                 <Row
                   k="Palier de frais"
                   v={a?.fees ? `${a.fees.pricingTier ?? "?"} — taker ${a.fees.takerFeePct?.toFixed(3) ?? "?"} % / maker ${a.fees.makerFeePct?.toFixed(3) ?? "?"} %` : "—"}

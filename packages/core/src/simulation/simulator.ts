@@ -143,6 +143,23 @@ export class MarketSimulator {
     return this.assets.map((a) => a.productId);
   }
 
+  /** Current prices (scenario effects included), to resume a simulation later. */
+  exportPrices(): Record<string, number> {
+    return Object.fromEntries(this.assets.map((a) => [a.productId, a.price]));
+  }
+
+  /** Resume from saved prices (unknown ids and invalid values are ignored). */
+  importPrices(prices: Record<string, number>) {
+    for (const a of this.assets) {
+      const p = prices[a.productId];
+      if (typeof p === "number" && Number.isFinite(p) && p > 0) {
+        a.basePrice = p;
+        a.price = p;
+        a.scenario = null;
+      }
+    }
+  }
+
   activeScenarios(): Scenario[] {
     return this.assets.flatMap((a) => (a.scenario ? [a.scenario] : []));
   }

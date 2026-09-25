@@ -30,3 +30,6 @@ config/signal-config.json
 next-env.d.ts
 *.tsbuildinfo
 config/trading.json
+
+# Demo build output
+apps/dashboard/demo/dist/

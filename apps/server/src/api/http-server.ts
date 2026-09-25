@@ -1,23 +1,11 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { LogQuerySchema, redact, type StatusResponse } from "@radar/core";
-import { z } from "zod";
 import type { EventLog } from "../logging/event-log.js";
-import type { MarketDataEngine } from "../market-data/market-data-engine.js";
-import type { RadarService } from "../signal-engine/radar-service.js";
-import type { TradingService } from "../trading/trading-service.js";
-import type { AccountService } from "../coinbase/account-service.js";
+import { handleAction, handleGet, statusOf, type RouteContext } from "./routes.js";
 
-export interface ApiContext {
+export interface ApiContext extends RouteContext {
   log: EventLog;
-  market: MarketDataEngine;
-  radar: RadarService;
-  trading: TradingService;
-  account?: AccountService;
-  /** Public, non-secret configuration exposed to the dashboard. */
-  publicConfig: () => Record<string, unknown>;
   /** Dashboard origins allowed by CORS (exact match). */
   allowedOrigins: string[];
-  startedAt: number;
 }
 
 const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
@@ -83,51 +71,9 @@ function handle(ctx: ApiContext, req: IncomingMessage, res: ServerResponse) {
   if (req.method === "POST") return void handlePost(ctx, req, res, url.pathname, headers);
   if (req.method !== "GET") return send(res, 405, { error: "method_not_allowed" }, headers);
 
-  switch (url.pathname) {
-    case "/api/health":
-      return send(res, 200, { ok: true, uptimeSec: Math.round((Date.now() - ctx.startedAt) / 1000) }, headers);
-    case "/api/status":
-      return send(res, 200, status(ctx), headers);
-    case "/api/radar":
-      return send(res, 200, ctx.radar.snapshot(), headers);
-    case "/api/opportunities": {
-      const opps = ctx.radar.opportunities();
-      const proposals: Record<string, unknown> = {};
-      for (const o of [...opps.active, ...opps.recent]) proposals[o.productId] ??= ctx.trading.proposals(o.productId);
-      return send(res, 200, { ...opps, proposals }, headers);
-    }
-    case "/api/trading":
-      return send(res, 200, ctx.trading.view(), headers);
-    case "/api/trading/trades": {
-      const limit = Math.min(5000, Math.max(1, Number(url.searchParams.get("limit") ?? 200) || 200));
-      return send(res, 200, ctx.trading.tradesList(limit), headers);
-    }
-    case "/api/trading/orders":
-      return send(res, 200, ctx.trading.ordersList(), headers);
-    case "/api/trading/equity":
-      return send(res, 200, ctx.trading.equityCurve(), headers);
-    case "/api/account":
-      return send(res, 200, redact(ctx.account?.view() ?? { configured: false, state: "disabled" }), headers);
-    case "/api/strategies":
-      return send(res, 200, { strategies: ctx.trading.listStrategies(), limits: ctx.trading.strategyLimits() }, headers);
-    case "/api/signals": {
-      const limit = Math.min(1000, Math.max(1, Number(url.searchParams.get("limit") ?? 200) || 200));
-      return send(res, 200, ctx.radar.recentSignals(limit), headers);
-    }
-    case "/api/products":
-      return send(res, 200, { products: ctx.market.getProducts(), filter: ctx.market.getFilterSummary() }, headers);
-    case "/api/logs": {
-      const q = LogQuerySchema.safeParse(Object.fromEntries(url.searchParams));
-      if (!q.success) return send(res, 400, { error: "invalid_query", issues: q.error.issues.map((i) => i.message) }, headers);
-      return send(res, 200, ctx.log.query(q.data), headers);
-    }
-    case "/api/config":
-      return send(res, 200, redact(ctx.publicConfig()), headers);
-    case "/api/stream":
-      return stream(ctx, req, res, headers);
-    default:
-      return send(res, 404, { error: "not_found" }, headers);
-  }
+  if (url.pathname === "/api/stream") return stream(ctx, req, res, headers);
+  const r = handleGet(ctx, url.pathname, url.searchParams);
+  return r ? send(res, r.status, r.body, headers) : send(res, 404, { error: "not_found" }, headers);
 }
 
 const MAX_BODY = 4096;
@@ -155,16 +101,6 @@ function readJson(req: IncomingMessage): Promise<unknown> {
   });
 }
 
-const EmergencyBody = z.object({ reason: z.string().max(200).optional() });
-const ResumeBody = z.object({
-  confirm: z.literal("RESUME"),
-  breakers: z.array(z.enum(["EMERGENCY_STOP", "DAILY_LOSS", "WEEKLY_LOSS", "API_ERRORS", "STALE_DATA", "SLIPPAGE", "EXECUTION_REJECTIONS", "TRADE_RATE"])).optional(),
-});
-const ResetBody = z.object({ confirm: z.literal("RESET") });
-const StrategyBody = z.object({ strategy: z.unknown() });
-const ToggleBody = z.object({ id: z.string(), enabled: z.boolean() });
-const DeleteBody = z.object({ id: z.string(), confirm: z.literal("DELETE") });
-
 async function handlePost(ctx: ApiContext, req: IncomingMessage, res: ServerResponse, pathname: string, headers: Record<string, string>) {
   const origin = req.headers.origin;
   if (origin && !ctx.allowedOrigins.includes(origin)) return send(res, 403, { error: "forbidden_origin" }, headers);
@@ -176,65 +112,8 @@ async function handlePost(ctx: ApiContext, req: IncomingMessage, res: ServerResp
   } catch (err) {
     return send(res, 400, { error: (err as Error).message }, headers);
   }
-  const bad = (e: z.ZodError) => send(res, 400, { error: "invalid_body", issues: e.issues.map((i) => i.message) }, headers);
-  switch (pathname) {
-    case "/api/trading/emergency-stop": {
-      const b = EmergencyBody.safeParse(body);
-      if (!b.success) return bad(b.error);
-      const changed = ctx.trading.emergencyStop(b.data.reason ?? "arrêt manuel depuis le dashboard");
-      return send(res, 200, { ok: true, changed, view: ctx.trading.view() }, headers);
-    }
-    case "/api/trading/resume": {
-      const b = ResumeBody.safeParse(body);
-      if (!b.success) return bad(b.error);
-      const cleared = ctx.trading.resume(b.data.breakers ?? "all");
-      return send(res, 200, { ok: true, cleared, view: ctx.trading.view() }, headers);
-    }
-    case "/api/trading/reset": {
-      const b = ResetBody.safeParse(body);
-      if (!b.success) return bad(b.error);
-      const r = ctx.trading.reset();
-      return send(res, r.ok ? 200 : 409, r, headers);
-    }
-    case "/api/strategies/preview": {
-      const b = StrategyBody.safeParse(body);
-      if (!b.success) return bad(b.error);
-      return send(res, 200, ctx.trading.previewStrategy(b.data.strategy), headers);
-    }
-    case "/api/strategies/save": {
-      const b = StrategyBody.safeParse(body);
-      if (!b.success) return bad(b.error);
-      const r = ctx.trading.upsertStrategy(b.data.strategy);
-      return send(res, r.ok ? 200 : 400, r, headers);
-    }
-    case "/api/strategies/toggle": {
-      const b = ToggleBody.safeParse(body);
-      if (!b.success) return bad(b.error);
-      const r = ctx.trading.setStrategyEnabled(b.data.id, b.data.enabled);
-      return send(res, r.ok ? 200 : 404, r, headers);
-    }
-    case "/api/strategies/delete": {
-      const b = DeleteBody.safeParse(body);
-      if (!b.success) return bad(b.error);
-      const r = ctx.trading.deleteStrategy(b.data.id);
-      return send(res, r.ok ? 200 : 409, r, headers);
-    }
-    default:
-      return send(res, 404, { error: "not_found" }, headers);
-  }
-}
-
-function status(ctx: ApiContext): StatusResponse {
-  const snap = ctx.radar.snapshot();
-  return {
-    mode: ctx.trading.mode,
-    startedAt: ctx.startedAt,
-    feed: ctx.market.status(),
-    health: snap?.health ?? ctx.market.health(),
-    products: ctx.market.getProducts().length,
-    opportunities: snap?.opportunities ?? 0,
-    signalsLast5m: snap?.signalsLast5m ?? 0,
-  };
+  const r = handleAction(ctx, pathname, body);
+  return send(res, r.status, r.body, headers);
 }
 
 function stream(ctx: ApiContext, req: IncomingMessage, res: ServerResponse, headers: Record<string, string>) {
@@ -246,14 +125,14 @@ function stream(ctx: ApiContext, req: IncomingMessage, res: ServerResponse, head
   });
   const write = (event: string, data: unknown) => res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
   res.write("retry: 2000\n\n");
-  write("status", status(ctx));
+  write("status", statusOf(ctx));
   write("trading", ctx.trading.view());
   const snap = ctx.radar.snapshot();
   if (snap) write("snapshot", snap);
 
   const offRadar = ctx.radar.subscribe((s) => {
     write("snapshot", s);
-    write("status", status(ctx));
+    write("status", statusOf(ctx));
     write("trading", ctx.trading.view());
   });
   const offLog = ctx.log.subscribe((e) => {

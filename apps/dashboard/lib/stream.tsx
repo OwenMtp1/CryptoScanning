@@ -2,7 +2,7 @@
 
 import type { LogEvent, RadarSnapshot, StatusResponse, TradingView } from "@radar/core";
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
-import { API_URL, getJson } from "./api";
+import { API_URL, demoBackend, getJson } from "./api";
 
 export type StreamState = "connecting" | "open" | "error";
 
@@ -37,13 +37,24 @@ export function RadarStreamProvider({ children }: { children: ReactNode }) {
         }),
       )
       .catch(() => {});
-    const es = new EventSource(`${API_URL}/api/stream`);
-    es.onopen = () => setState("open");
-    es.onerror = () => setState("error"); // EventSource reconnects automatically
-    es.addEventListener("snapshot", (e) => setSnapshot(JSON.parse((e as MessageEvent).data)));
-    es.addEventListener("status", (e) => setStatus(JSON.parse((e as MessageEvent).data)));
-    es.addEventListener("trading", (e) => setTrading(JSON.parse((e as MessageEvent).data)));
-    es.addEventListener("log", (e) => pending.current.push(JSON.parse((e as MessageEvent).data)));
+    const handlers: Record<string, (data: unknown) => void> = {
+      snapshot: (d) => setSnapshot(d as RadarSnapshot),
+      status: (d) => setStatus(d as StatusResponse),
+      trading: (d) => setTrading(d as TradingView),
+      log: (d) => pending.current.push(d as LogEvent),
+    };
+    let close: () => void;
+    const demo = demoBackend();
+    if (demo) {
+      setState("open");
+      close = demo.subscribe((event, data) => handlers[event]?.(data));
+    } else {
+      const es = new EventSource(`${API_URL}/api/stream`);
+      es.onopen = () => setState("open");
+      es.onerror = () => setState("error"); // EventSource reconnects automatically
+      for (const [name, h] of Object.entries(handlers)) es.addEventListener(name, (e) => h(JSON.parse((e as MessageEvent).data)));
+      close = () => es.close();
+    }
     // Batch log updates to avoid re-rendering on every event.
     const flush = setInterval(() => {
       if (!pending.current.length) return;
@@ -53,7 +64,7 @@ export function RadarStreamProvider({ children }: { children: ReactNode }) {
     }, 500);
     return () => {
       clearInterval(flush);
-      es.close();
+      close();
     };
   }, []);
 

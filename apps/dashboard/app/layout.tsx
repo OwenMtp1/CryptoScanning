@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
+import { DialogProvider } from "@/components/Dialogs";
 import { Header } from "@/components/Header";
 import { RadarStreamProvider } from "@/lib/stream";
 import "./globals.css";
@@ -14,8 +15,10 @@ export default function RootLayout({ children }: { children: ReactNode }) {
     <html lang="fr">
       <body className="min-h-screen font-sans antialiased">
         <RadarStreamProvider>
-          <Header />
-          <main className="mx-auto max-w-[1600px] px-4 py-6">{children}</main>
+          <DialogProvider>
+            <Header />
+            <main className="mx-auto max-w-[1600px] px-4 py-6">{children}</main>
+          </DialogProvider>
         </RadarStreamProvider>
       </body>
     </html>
