@@ -2,7 +2,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { REPO_ROOT, loadEnv, loadSignalConfig } from "../src/config/env.js";
+import { REPO_ROOT, loadEnv, loadSignalConfig, loadTradingConfig } from "../src/config/env.js";
 
 describe("env", () => {
   it("defaults to the simulated RADAR setup bound to localhost", () => {
@@ -27,7 +27,8 @@ describe("env", () => {
     expect(loadSignalConfig(path.join(dir, "missing.json")).source).toBe("defaults");
   });
 
-  it("ships a valid example signal config", () => {
+  it("ships valid example configs", () => {
     expect(loadSignalConfig(path.join(REPO_ROOT, "config/signal-config.example.json")).source).toBe("file");
+    expect(loadTradingConfig(path.join(REPO_ROOT, "config/trading.example.json")).source).toBe("file");
   });
 });

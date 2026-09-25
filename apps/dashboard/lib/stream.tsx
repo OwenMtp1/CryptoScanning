@@ -1,6 +1,6 @@
 "use client";
 
-import type { LogEvent, RadarSnapshot, StatusResponse } from "@radar/core";
+import type { LogEvent, RadarSnapshot, StatusResponse, TradingView } from "@radar/core";
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { API_URL, getJson } from "./api";
 
@@ -10,18 +10,20 @@ interface RadarStream {
   state: StreamState;
   snapshot: RadarSnapshot | null;
   status: StatusResponse | null;
+  trading: TradingView | null;
   /** Most recent live events (newest first). */
   events: LogEvent[];
 }
 
 const MAX_EVENTS = 300;
-const Ctx = createContext<RadarStream>({ state: "connecting", snapshot: null, status: null, events: [] });
+const Ctx = createContext<RadarStream>({ state: "connecting", snapshot: null, status: null, trading: null, events: [] });
 
 /** One shared Server-Sent Events connection to the local API for all pages. */
 export function RadarStreamProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<StreamState>("connecting");
   const [snapshot, setSnapshot] = useState<RadarSnapshot | null>(null);
   const [status, setStatus] = useState<StatusResponse | null>(null);
+  const [trading, setTrading] = useState<TradingView | null>(null);
   const [events, setEvents] = useState<LogEvent[]>([]);
   const pending = useRef<LogEvent[]>([]);
 
@@ -40,6 +42,7 @@ export function RadarStreamProvider({ children }: { children: ReactNode }) {
     es.onerror = () => setState("error"); // EventSource reconnects automatically
     es.addEventListener("snapshot", (e) => setSnapshot(JSON.parse((e as MessageEvent).data)));
     es.addEventListener("status", (e) => setStatus(JSON.parse((e as MessageEvent).data)));
+    es.addEventListener("trading", (e) => setTrading(JSON.parse((e as MessageEvent).data)));
     es.addEventListener("log", (e) => pending.current.push(JSON.parse((e as MessageEvent).data)));
     // Batch log updates to avoid re-rendering on every event.
     const flush = setInterval(() => {
@@ -54,7 +57,7 @@ export function RadarStreamProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  return <Ctx.Provider value={{ state, snapshot, status, events }}>{children}</Ctx.Provider>;
+  return <Ctx.Provider value={{ state, snapshot, status, trading, events }}>{children}</Ctx.Provider>;
 }
 
 export function useRadarStream(): RadarStream {

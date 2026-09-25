@@ -1,6 +1,6 @@
 "use client";
 
-import type { Opportunity } from "@radar/core";
+import type { Opportunity, StrategyProposal } from "@radar/core";
 import { useEffect, useState } from "react";
 import { Card, ScoreBar, SignalChips } from "@/components/ui";
 import { getJson } from "@/lib/api";
@@ -10,9 +10,45 @@ import { useRadarStream } from "@/lib/stream";
 interface OppResponse {
   active: Opportunity[];
   recent: Opportunity[];
+  proposals: Record<string, StrategyProposal[]>;
 }
 
-function OpportunityCard({ o, now }: { o: Opportunity; now: number }) {
+function Proposals({ list, currency }: { list: StrategyProposal[] | undefined; currency: string }) {
+  if (!list || list.length === 0) return <span className="text-slate-500">Aucune stratégie ne couvre ce produit (univers, devise).</span>;
+  return (
+    <div className="space-y-2">
+      {list.map((p) => (
+        <div key={p.strategyId}>
+          <div className="text-slate-200">{p.strategyName}</div>
+          <div className="mt-1 flex flex-wrap gap-1">
+            {p.conditions.map((c) => (
+              <span key={c.label} className={`rounded px-1.5 py-0.5 text-[10px] ${c.passed ? "bg-emerald-500/15 text-emerald-300" : "bg-slate-800 text-slate-400"}`}>
+                {c.passed ? "✓" : "✗"} {c.label} ({c.value === null ? "—" : c.value.toFixed(2)})
+              </span>
+            ))}
+          </div>
+          <div className="mt-1 text-xs">
+            Action : <span className="text-slate-200">{p.action}</span>
+            {p.allConditionsMet && (
+              <>
+                {" "}
+                · montant {p.quoteAmount} {currency} · frais estimés aller-retour {p.estimatedFees.toFixed(2)} {currency}
+              </>
+            )}
+          </div>
+          {p.risk && (
+            <div className={`mt-1 text-xs font-semibold ${p.risk.approved ? "text-emerald-400" : "text-rose-400"}`}>
+              Risk Engine : {p.risk.approved ? "APPROVED" : "REJECTED"}
+              {!p.risk.approved && <ul className="mt-0.5 list-inside list-disc font-normal text-rose-300/90">{p.risk.reasons.map((r) => <li key={r}>{r}</li>)}</ul>}
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function OpportunityCard({ o, now, proposals }: { o: Opportunity; now: number; proposals?: StrategyProposal[] }) {
   const m = o.metrics;
   const move = ((o.price - o.priceAtDetection) / o.priceAtDetection) * 100;
   const accelLabel = m.accelerationPct === null ? "—" : m.accelerationPct >= 1 ? "FORTE" : m.accelerationPct >= 0.5 ? "MOYENNE" : "FAIBLE";
@@ -64,7 +100,7 @@ function OpportunityCard({ o, now }: { o: Opportunity; now: number }) {
         </ul>
       </div>
 
-      <div className="mt-3 grid gap-2 text-sm sm:grid-cols-3">
+      <div className="mt-3 grid gap-2 text-sm sm:grid-cols-[1fr_2fr]">
         <div className="rounded bg-slate-900 p-2">
           <div className="text-[11px] text-slate-500">Tradabilité (liquidité)</div>
           {o.tradable ? (
@@ -73,13 +109,9 @@ function OpportunityCard({ o, now }: { o: Opportunity; now: number }) {
             <span className="font-semibold text-amber-300">NON TRADABLE : {o.liquidityIssues.join(", ")}</span>
           )}
         </div>
-        <div className="rounded bg-slate-900 p-2">
-          <div className="text-[11px] text-slate-500">Stratégie / action proposée</div>
-          <span className="text-slate-300">{o.suggestedAction}</span>
-        </div>
-        <div className="rounded bg-slate-900 p-2">
-          <div className="text-[11px] text-slate-500">Risk Engine / frais estimés</div>
-          <span className="text-slate-500">Non évalué — Risk Engine et frais en phase ultérieure</span>
+        <div className="rounded bg-slate-900 p-2 text-sm">
+          <div className="text-[11px] text-slate-500">Stratégies → action proposée → Risk Engine {o.status !== "active" && "(état actuel du marché)"}</div>
+          <Proposals list={proposals} currency={m.quoteCurrency} />
         </div>
       </div>
     </div>
@@ -107,13 +139,13 @@ export default function OpportunitiesPage() {
       {error && <Card><span className="text-rose-400">{error}</span></Card>}
       <Card title={`Opportunités actives (${data?.active.length ?? 0})`}>
         <div className="grid gap-4 lg:grid-cols-2">
-          {data?.active.map((o) => <OpportunityCard key={o.id} o={o} now={now} />)}
+          {data?.active.map((o) => <OpportunityCard key={o.id} o={o} now={now} proposals={data.proposals[o.productId]} />)}
         </div>
         {data && data.active.length === 0 && <p className="text-sm text-slate-500">Aucune opportunité active. Le radar surveille le marché.</p>}
       </Card>
       <Card title="Opportunités récentes (expirées)">
         <div className="grid gap-4 lg:grid-cols-2">
-          {data?.recent.map((o) => <OpportunityCard key={o.id} o={o} now={now} />)}
+          {data?.recent.map((o) => <OpportunityCard key={o.id} o={o} now={now} proposals={data.proposals[o.productId]} />)}
         </div>
         {data && data.recent.length === 0 && <p className="text-sm text-slate-500">Aucune pour l&apos;instant.</p>}
       </Card>

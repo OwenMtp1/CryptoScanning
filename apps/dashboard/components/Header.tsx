@@ -3,10 +3,13 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useRadarStream } from "@/lib/stream";
+import { BlockedBanner, EmergencyStopButton } from "./SafetyControls";
 
 const NAV = [
   { href: "/", label: "Radar" },
   { href: "/opportunities", label: "Opportunités" },
+  { href: "/positions", label: "Positions" },
+  { href: "/portfolio", label: "Portefeuille" },
   { href: "/logs", label: "Journal" },
   { href: "/settings", label: "Paramètres" },
 ];
@@ -14,6 +17,7 @@ const NAV = [
 export function Header() {
   const path = usePathname();
   const { state, status } = useRadarStream();
+  const mode = status?.mode ?? "RADAR";
   const simulated = status?.feed.source === "simulated";
   const healthy = state === "open" && status?.health.healthy;
 
@@ -24,10 +28,16 @@ export function Header() {
           DONNÉES SIMULÉES — prix et volumes fictifs, aucune connexion à Coinbase
         </div>
       )}
+      <BlockedBanner />
       <div className="mx-auto flex max-w-[1600px] flex-wrap items-center gap-x-6 gap-y-2 px-4 py-3">
         <div className="flex items-center gap-2">
           <span className="text-lg font-bold tracking-widest text-slate-100">CRYPTO RADAR</span>
-          <span className="rounded bg-sky-500/15 px-2 py-0.5 text-xs font-semibold text-sky-300">MODE RADAR</span>
+          <span
+            className={`rounded px-2 py-0.5 text-xs font-semibold ${mode === "PAPER" ? "bg-emerald-500/15 text-emerald-300" : "bg-sky-500/15 text-sky-300"}`}
+            title={mode === "PAPER" ? "Trading simulé : aucun ordre réel" : "Observation uniquement"}
+          >
+            {mode === "PAPER" ? "🟢 PAPER MODE" : "MODE RADAR"}
+          </span>
         </div>
         <nav className="flex gap-1">
           {NAV.map((n) => (
@@ -47,6 +57,7 @@ export function Header() {
             : healthy
               ? `Flux ${status?.feed.source === "simulated" ? "simulé" : "Coinbase"} OK`
               : `Flux dégradé : ${status?.health.reason ?? "…"}`}
+          <EmergencyStopButton />
         </div>
       </div>
     </header>

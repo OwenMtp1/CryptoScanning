@@ -49,3 +49,16 @@ export function fmtDuration(ms: number): string {
   if (m < 60) return `${m} min ${s % 60} s`;
   return `${Math.floor(m / 60)} h ${m % 60} min`;
 }
+
+export function fmtMoney(x: number | null | undefined, currency = "EUR", signed = false): string {
+  if (x === null || x === undefined || !Number.isFinite(x)) return "—";
+  const r = Math.abs(x) < 0.005 ? 0 : x;
+  let s: string;
+  try {
+    s = new Intl.NumberFormat("fr-FR", { style: "currency", currency, minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(r);
+  } catch {
+    // Non-ISO codes (e.g. USDC) are not accepted by Intl currency formatting.
+    s = `${r.toLocaleString("fr-FR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${currency}`;
+  }
+  return signed && r > 0 ? `+${s}` : s;
+}

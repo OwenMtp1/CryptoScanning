@@ -37,7 +37,10 @@ import {
   type Position,
   type RadarRow,
   type RadarSnapshot,
+  type StrategyProposal,
+  type TradingView,
   type RiskContext,
+  type RunMode,
   type RiskDecision,
   type Strategy,
   type TradeRecord,
@@ -47,7 +50,7 @@ import type { MarketDataEngine } from "../market-data/market-data-engine.js";
 import type { LogFn } from "../market-data/source.js";
 import type { PaperStateFile, PaperStore } from "./paper-store.js";
 
-export type TradingMode = "RADAR" | "PAPER";
+export type TradingMode = RunMode;
 
 export interface TradingServiceOptions {
   mode: TradingMode;
@@ -59,46 +62,6 @@ export interface TradingServiceOptions {
   now?: () => number;
   /** Delayed execution (latency simulation); injectable for tests. */
   schedule?: (fn: () => void, ms: number) => void;
-}
-
-export interface StrategyProposal {
-  strategyId: string;
-  strategyName: string;
-  conditions: { label: string; passed: boolean; value: number | null }[];
-  allConditionsMet: boolean;
-  quoteAmount: number;
-  estimatedFees: number;
-  risk: { approved: boolean; reasons: string[] } | null;
-  action: string;
-}
-
-export interface TradingView {
-  mode: TradingMode;
-  executionEnabled: boolean;
-  initialized: boolean;
-  waitingFor: string[];
-  capital: CapitalBreakdown;
-  initialValue: number;
-  positions: (Position & { unrealizedPnl: number; effectiveStop: number; currentScore: number | null })[];
-  pendingOrders: Order[];
-  performance: PerformanceStats;
-  breakers: BreakerState[];
-  emergencyStop: BreakerState | null;
-  limits: {
-    lossUsed24h: number;
-    maxDailyLoss: number;
-    lossUsed7d: number;
-    maxWeeklyLoss: number;
-    entriesLastHour: number;
-    maxTradesPerHour: number;
-    entriesLastDay: number;
-    maxTradesPerDay: number;
-    openPositions: number;
-    maxOpenPositions: number;
-  };
-  riskLevel: "LOW" | "MEDIUM" | "HIGH" | "BLOCKED";
-  strategies: Strategy[];
-  fees: { takerFeePct: number; assumption: string };
 }
 
 const HOUR = 3_600_000;

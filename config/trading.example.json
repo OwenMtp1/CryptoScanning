@@ -1,0 +1,111 @@
+{
+  "portfolio": {
+    "currency": "EUR",
+    "initial": {
+      "cash": 100,
+      "holdings": {
+        "BTC": 200,
+        "ETH": 200
+      }
+    },
+    "protectedCapital": 400,
+    "minHoldingsValue": {
+      "BTC": 200,
+      "ETH": 200
+    }
+  },
+  "risk": {
+    "maxTradeQuote": 10,
+    "maxOpenPositions": 3,
+    "maxDailyLossQuote": 5,
+    "maxWeeklyLossQuote": 15,
+    "maxTradesPerHour": 6,
+    "maxTradesPerDay": 20,
+    "cooldownAfterLossSec": 300,
+    "maxExposurePerAssetQuote": 20,
+    "maxTotalExposureQuote": 50,
+    "maxSpreadPct": 0.5,
+    "minTopBookDepthQuote": 1000,
+    "min24hVolumeQuote": 50000,
+    "maxDataAgeSec": 10,
+    "maxExitDataAgeSec": 60,
+    "maxPriceDeviationPct": 2,
+    "maxEstimatedSlippagePct": 1,
+    "maxRealizedSlippagePct": 2,
+    "maxConsecutiveErrors": 3,
+    "maxExecutionRejectionsPerHour": 10,
+    "retryAfterRejectSec": 60
+  },
+  "paper": {
+    "takerFeePct": 1.2,
+    "latencyMs": [
+      150,
+      600
+    ],
+    "baseSlippageBps": 2,
+    "impactPctPerDepth": 0.3,
+    "maxDepthMultiple": 3,
+    "unfilledProbability": 0.01,
+    "seed": 7
+  },
+  "strategies": [
+    {
+      "id": "bump-momentum",
+      "name": "Bump momentum (exemple du cahier des charges)",
+      "enabled": true,
+      "universe": {
+        "quoteCurrencies": [
+          "EUR"
+        ],
+        "excludeBases": []
+      },
+      "entry": {
+        "conditions": [
+          {
+            "metric": "priceChangePct",
+            "window": "1m",
+            "op": ">",
+            "value": 3
+          },
+          {
+            "metric": "volumeRatio",
+            "op": ">",
+            "value": 2
+          },
+          {
+            "metric": "score",
+            "op": ">",
+            "value": 70
+          },
+          {
+            "metric": "spreadPct",
+            "op": "<",
+            "value": 0.5
+          }
+        ]
+      },
+      "sizing": {
+        "quoteAmount": 10
+      },
+      "exit": {
+        "stopLossPct": 2,
+        "trailingStopPct": 2,
+        "takeProfitPct": null,
+        "maxDurationSec": 3600
+      },
+      "afterExit": {
+        "rotation": {
+          "enabled": true,
+          "mode": "profit_only",
+          "allocations": {
+            "BTC": 50,
+            "ETH": 50
+          },
+          "minOrderQuote": 1
+        }
+      },
+      "cooldownPerProductSec": 900
+    }
+  ],
+  "equitySampleSec": 60
+}

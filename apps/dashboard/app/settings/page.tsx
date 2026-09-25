@@ -1,6 +1,6 @@
 "use client";
 
-import type { SignalConfig } from "@radar/core";
+import type { SignalConfig, TradingConfig } from "@radar/core";
 import { useEffect, useState, type ReactNode } from "react";
 import { Card } from "@/components/ui";
 import { getJson } from "@/lib/api";
@@ -16,6 +16,8 @@ interface PublicConfig {
   evalIntervalMs: number;
   signalConfig: SignalConfig;
   signalConfigSource: "file" | "defaults";
+  tradingConfig: TradingConfig;
+  tradingConfigSource: "file" | "defaults";
   coinbase: {
     restBaseUrl: string;
     wsUrl: string;
@@ -53,18 +55,20 @@ export default function SettingsPage() {
   if (error) return <Card><span className="text-rose-400">{error}</span></Card>;
   if (!cfg) return <Card><span className="text-slate-400">Chargement…</span></Card>;
   const s = cfg.signalConfig;
+  const t = cfg.tradingConfig;
+  const cur = t.portfolio.currency;
 
   return (
     <div className="space-y-4">
       <p className="text-sm text-slate-500">
         Lecture seule en phase 1. La configuration se modifie dans <code className="text-slate-300">.env</code> et{" "}
-        <code className="text-slate-300">config/signal-config.json</code> puis redémarrage du serveur (valeurs validées par Zod au démarrage).
+        <code className="text-slate-300">config/signal-config.json</code>, <code className="text-slate-300">config/trading.json</code> puis redémarrage du serveur (valeurs validées par Zod au démarrage).
       </p>
       <div className="grid gap-4 lg:grid-cols-2 xl:grid-cols-3">
         <Card title="Général">
           <Row k="Mode" v={<span className="font-semibold text-sky-300">{cfg.mode}</span>} />
           <Row k="Modes implémentés" v={cfg.implementedModes.join(", ")} />
-          <Row k="PAPER / LIVE" v={<span className="text-slate-500">non disponibles (phases ultérieures)</span>} />
+          <Row k="LIVE" v={<span className="text-slate-500">non disponible (phase ultérieure, confirmations multiples)</span>} />
           <Row k="Source des données" v={cfg.dataSource === "simulated" ? <span className="text-amber-300">SIMULÉE</span> : "Coinbase (public)"} />
           <Row k="Devises de cotation" v={cfg.quoteCurrencies.join(", ")} />
           <Row k="Produits max." v={cfg.maxProducts} />
@@ -100,17 +104,55 @@ export default function SettingsPage() {
             k="Poids M / V / A / L / Vol"
             v={`${s.scoring.weights.momentum} / ${s.scoring.weights.volume} / ${s.scoring.weights.acceleration} / ${s.scoring.weights.liquidity} / ${s.scoring.weights.volatility}`}
           />
-          <Row k="Stop loss / trailing / take profit" v={<span className="text-slate-500">Strategy Engine (phase ultérieure)</span>} />
         </Card>
 
-        <Card title="Capital">
-          <Later>Capital maximum, protégé et tradable : configurables avec le Paper Trading et le Risk Engine.</Later>
+        <Card title={`Capital (${cfg.tradingConfigSource === "file" ? "fichier" : "défauts"})`}>
+          <Row k="Capital initial paper" v={`${t.portfolio.initial.cash} ${cur} liquidités + ${Object.entries(t.portfolio.initial.holdings).map(([a, v]) => `${v} ${a}`).join(" + ")}`} />
+          <Row k="Capital protégé" v={`${t.portfolio.protectedCapital} ${cur}`} />
+          <Row k="Capital tradable" v="total − protégé (dynamique)" />
+          <Row k="Minimums conservés" v={Object.entries(t.portfolio.minHoldingsValue).map(([a, v]) => `${a} ${v} ${cur}`).join(", ") || "—"} />
+          <Row k="Devise de compte" v={cur} />
         </Card>
-        <Card title="Risque">
-          <Later>Max par trade, perte quotidienne max., positions max., trades max., cooldown : Risk Engine (phase ultérieure).</Later>
+        <Card title="Risque (Risk Engine)">
+          <Row k="Max par trade" v={`${t.risk.maxTradeQuote} ${cur}`} />
+          <Row k="Positions max." v={t.risk.maxOpenPositions} />
+          <Row k="Perte max. 24 h / 7 j" v={`${t.risk.maxDailyLossQuote} / ${t.risk.maxWeeklyLossQuote} ${cur}`} />
+          <Row k="Trades max. / h / 24 h" v={`${t.risk.maxTradesPerHour} / ${t.risk.maxTradesPerDay}`} />
+          <Row k="Cooldown après perte" v={`${t.risk.cooldownAfterLossSec} s`} />
+          <Row k="Exposition max. par actif / totale" v={`${t.risk.maxExposurePerAssetQuote} / ${t.risk.maxTotalExposureQuote} ${cur}`} />
+          <Row k="Spread max. / profondeur min." v={`${t.risk.maxSpreadPct} % / ${t.risk.minTopBookDepthQuote} ${cur}`} />
+          <Row k="Volume 24 h min." v={`${t.risk.min24hVolumeQuote} ${cur}`} />
+          <Row k="Fraîcheur max. (entrées / sorties)" v={`${t.risk.maxDataAgeSec} s / ${t.risk.maxExitDataAgeSec} s`} />
+          <Row k="Slippage max. estimé / réalisé" v={`${t.risk.maxEstimatedSlippagePct} % / ${t.risk.maxRealizedSlippagePct} %`} />
+          <Row k="Erreurs consécutives max." v={t.risk.maxConsecutiveErrors} />
         </Card>
-        <Card title="Rotation & notifications">
-          <Later>Rotation BTC/ETH et notifications Discord/Telegram : phases ultérieures.</Later>
+        <Card title="Simulation paper">
+          <Row k="Frais taker" v={<span className="text-amber-300">{t.paper.takerFeePct} % (hypothèse non vérifiée)</span>} />
+          <Row k="Latence simulée" v={`${t.paper.latencyMs[0]}–${t.paper.latencyMs[1]} ms`} />
+          <Row k="Slippage aléatoire / impact" v={`${t.paper.baseSlippageBps} bps / ${t.paper.impactPctPerDepth} % par profondeur`} />
+          <Row k="Exécution partielle au-delà de" v={`${t.paper.maxDepthMultiple}× la profondeur top-of-book`} />
+          <Row k="Probabilité d'ordre non exécuté" v={`${(t.paper.unfilledProbability * 100).toFixed(1)} %`} />
+        </Card>
+        {t.strategies.map((st) => (
+          <Card key={st.id} title={`Stratégie : ${st.name}${st.enabled ? "" : " (désactivée)"}`}>
+            <Row k="SI" v={st.entry.conditions.map((c) => `${c.metric}${c.window ? ` ${c.window}` : ""} ${c.op} ${c.value}`).join(" ET ")} />
+            <Row k="Univers" v={`${st.universe.quoteCurrencies.join(", ")}${st.universe.excludeBases.length ? ` sauf ${st.universe.excludeBases.join(", ")}` : ""}`} />
+            <Row k="ALORS" v={`ouvrir ${st.sizing.quoteAmount} ${cur} max.`} />
+            <Row k="Stop / trailing / take profit" v={`−${st.exit.stopLossPct} % / ${st.exit.trailingStopPct ?? "—"} % / ${st.exit.takeProfitPct ?? "—"} %`} />
+            <Row k="Durée max." v={st.exit.maxDurationSec ? `${st.exit.maxDurationSec} s` : "—"} />
+            <Row
+              k="Après sortie (rotation)"
+              v={
+                st.afterExit.rotation.enabled
+                  ? `${Object.entries(st.afterExit.rotation.allocations).map(([a, v]) => `${v} % ${a}`).join(" / ")} du ${st.afterExit.rotation.mode === "proceeds" ? "capital récupéré" : "profit uniquement"}`
+                  : "désactivée"
+              }
+            />
+            <Row k="Cooldown par produit" v={`${st.cooldownPerProductSec} s`} />
+          </Card>
+        ))}
+        <Card title="Notifications">
+          <Later>Discord / Telegram : phase ultérieure. Les événements (🚨 ⚡ 🛑 💰 🔴 ⚠️) sont déjà journalisés et visibles dans le dashboard.</Later>
         </Card>
       </div>
     </div>

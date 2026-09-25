@@ -9,7 +9,7 @@ Coinbase ──► │ MarketDataSource ──► MarketDataEngine ──► Rad
              │                       fraîcheur            (core)                             │
              │                                 └──────────► EventLog (JSONL) ◄───────────────┤
              └───────────────────────────────────────────────────────────────────────────────┘
-                 phases suivantes : StrategyEngine ─► RiskEngine (barrière) ─► ExecutionEngine
+                 TradingService : StrategyEngine ─► RiskEngine (barrière) ─► Exécution paper ─► Positions
 ```
 
 Principes :
@@ -88,6 +88,10 @@ En phase 1, l'action proposée est toujours « Aucune — mode RADAR ».
 | config | `apps/server/src/config`, `config/` | ✅ phase 1 |
 | database | journal JSONL (V1) ; interface `Repository` + PostgreSQL pour le 24/7 | partiel |
 | notifications | événements déjà typés dans `EVENT_TYPES` | à venir |
-| strategy-engine, risk-engine, portfolio, execution, paper-trading, backtesting | — | à venir, dans cet ordre, selon le plan |
+| strategy-engine | `packages/core/src/trading/strategy.ts` | ✅ phase 2 (JSON ; builder visuel à venir) |
+| risk-engine | `packages/core/src/trading/{risk,breakers}.ts` | ✅ phase 2 |
+| portfolio | `packages/core/src/trading/portfolio.ts` | ✅ phase 2 |
+| execution / paper-trading | `packages/core/src/trading/paper-execution.ts`, `apps/server/src/trading` | ✅ phase 2 (paper) ; Live à venir |
+| backtesting | — | à venir (réutilisera les mêmes modules purs) |
 
-Les types d'événements des phases suivantes (`ORDER_*`, `POSITION_*`, `RISK_CHECK`…) sont déjà réservés, pour que le format du journal reste stable.
+La chaîne de trading est décrite dans [03-phase-2-paper-trading.md](03-phase-2-paper-trading.md).
