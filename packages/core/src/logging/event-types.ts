@@ -2,8 +2,7 @@
 
 /**
  * Event types. The list covers the future phases (orders, positions…)
- * so the log format stays stable; phase 1 only emits system, market-data
- * and signal events.
+ * so the log format stays stable.
  */
 export const EVENT_TYPES = [
   // System
@@ -27,7 +26,7 @@ export const EVENT_TYPES = [
   "SIGNAL_DETECTED",
   "OPPORTUNITY_DETECTED",
   "OPPORTUNITY_EXPIRED",
-  // Future phases (not emitted yet)
+  // Trading (phase 2: paper)
   "STRATEGY_TRIGGERED",
   "RISK_CHECK",
   "ORDER_APPROVED",
@@ -38,8 +37,13 @@ export const EVENT_TYPES = [
   "POSITION_OPENED",
   "POSITION_CLOSED",
   "STOP_TRIGGERED",
+  "ROTATION_PLANNED",
+  "ROTATION_SKIPPED",
   "BOT_PAUSED",
   "BOT_STOPPED",
+  "BOT_RESUMED",
+  "PAPER_INITIALIZED",
+  "PAPER_RESET",
 ] as const;
 export type EventType = (typeof EVENT_TYPES)[number];
 

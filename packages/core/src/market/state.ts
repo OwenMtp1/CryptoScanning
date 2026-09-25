@@ -9,6 +9,8 @@ export interface ProductMetrics {
   price: number | null;
   bestBid: number | null;
   bestAsk: number | null;
+  bestBidQty: number | null;
+  bestAskQty: number | null;
   /** (ask − bid) / mid, in %. */
   spreadPct: number | null;
   /** Top-of-book depth (best bid qty × bid + best ask qty × ask), in quote currency. */
@@ -262,6 +264,8 @@ function computeMetrics(st: ProductState, now: number, cfg: SignalConfig, retent
     price,
     bestBid: bid,
     bestAsk: ask,
+    bestBidQty: t?.bestBidQty ?? null,
+    bestAskQty: t?.bestAskQty ?? null,
     spreadPct,
     topBookDepthQuote: depth,
     volume24hQuote,
