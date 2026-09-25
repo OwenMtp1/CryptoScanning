@@ -10,6 +10,7 @@ const NAV = [
   { href: "/opportunities", label: "Opportunités" },
   { href: "/positions", label: "Positions" },
   { href: "/portfolio", label: "Portefeuille" },
+  { href: "/strategies", label: "Stratégies" },
   { href: "/logs", label: "Journal" },
   { href: "/settings", label: "Paramètres" },
 ];

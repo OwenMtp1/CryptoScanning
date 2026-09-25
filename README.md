@@ -71,7 +71,7 @@ apps/server        backend local Node.js (seul composant qui parle à Coinbase)
   src/logging        journal JSONL horodaté (data/logs/)
   src/api            API HTTP en lecture seule + flux SSE
   src/config         variables d'environnement validées par Zod
-apps/dashboard     Next.js + Tailwind (Radar, Opportunités, Positions, Portefeuille, Journal, Paramètres)
+apps/dashboard     Next.js + Tailwind (Radar, Opportunités, Positions, Portefeuille, Stratégies, Journal, Paramètres)
 config/            configuration des signaux (exemple versionné)
 docs/              audit Coinbase, architecture, bilan de phase
 ```
@@ -83,6 +83,7 @@ Détails : [docs/01-architecture.md](docs/01-architecture.md).
 - `.env` (voir [.env.example](.env.example)) : mode, source, devises, limites réseau. **Jamais committé.**
 - `config/signal-config.json` (optionnel, à partir de [config/signal-config.example.json](config/signal-config.example.json)) : seuils, fenêtres, poids du score, critères de liquidité.
 - `config/trading.json` (optionnel, à partir de [config/trading.example.json](config/trading.example.json)) : capital, limites de risque, frais et paramètres de simulation, stratégies, rotation.
+- `data/strategies.json` : écrit par le **Strategy Builder** (page Stratégies). Quand il existe, il remplace les stratégies de `config/trading.json`.
 
 Les deux fichiers sont validés par Zod au démarrage ; une valeur invalide empêche le serveur de démarrer. Une stratégie sans stop loss, ou demandant plus que `maxTradeQuote`, est refusée.
 
@@ -100,6 +101,6 @@ Les deux fichiers sont validés par Zod au démarrage ; une valeur invalide emp�
 
 1. ✅ Architecture, données publiques, WebSocket, radar, Signal Engine, logs, dashboard
 2. ✅ Risk Engine, disjoncteurs, emergency stop, Paper Trading (même Strategy/Risk Engine que le futur Live)
-3. ⏭ Strategy Builder visuel
-4. Backtesting (train / out-of-sample)
+3. ✅ Strategy Builder visuel ([docs/04-strategy-builder.md](docs/04-strategy-builder.md))
+4. ⏭ Backtesting (train / out-of-sample)
 5. Notifications, puis connexion trading Coinbase et Live avec confirmations multiples
