@@ -5,7 +5,8 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./event-types": "./src/logging/event-types.ts"
+    "./event-types": "./src/logging/event-types.ts",
+    "./strategy-schema": "./src/trading/config.ts"
   },
   "scripts": {
     "test": "vitest run",

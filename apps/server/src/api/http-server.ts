@@ -24,11 +24,12 @@ const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
  * Local HTTP API + Server-Sent Events stream for the dashboard.
  * Secrets never go through here.
  *
- * Mutating endpoints (POST) are limited to safety controls (emergency stop,
- * manual re-activation, paper reset). They require the custom header
+ * Mutating endpoints (POST): safety controls (emergency stop, manual
+ * re-activation, paper reset) and the Strategy Builder (strategies are
+ * always validated against the Risk Engine limits). They require the custom header
  * `x-radar-action: confirm` — which a foreign web page cannot send without a
  * CORS preflight that only allowed origins pass — and, when present, an
- * allowed Origin. No endpoint can place an order, change a limit or move funds.
+ * allowed Origin. No endpoint can place an order, change a risk limit or move funds.
  */
 export function createApiServer(ctx: ApiContext): Server {
   return createServer((req, res) => {
@@ -103,6 +104,8 @@ function handle(ctx: ApiContext, req: IncomingMessage, res: ServerResponse) {
       return send(res, 200, ctx.trading.ordersList(), headers);
     case "/api/trading/equity":
       return send(res, 200, ctx.trading.equityCurve(), headers);
+    case "/api/strategies":
+      return send(res, 200, { strategies: ctx.trading.listStrategies(), limits: ctx.trading.strategyLimits() }, headers);
     case "/api/signals": {
       const limit = Math.min(1000, Math.max(1, Number(url.searchParams.get("limit") ?? 200) || 200));
       return send(res, 200, ctx.radar.recentSignals(limit), headers);
@@ -154,6 +157,9 @@ const ResumeBody = z.object({
   breakers: z.array(z.enum(["EMERGENCY_STOP", "DAILY_LOSS", "WEEKLY_LOSS", "API_ERRORS", "STALE_DATA", "SLIPPAGE", "EXECUTION_REJECTIONS", "TRADE_RATE"])).optional(),
 });
 const ResetBody = z.object({ confirm: z.literal("RESET") });
+const StrategyBody = z.object({ strategy: z.unknown() });
+const ToggleBody = z.object({ id: z.string(), enabled: z.boolean() });
+const DeleteBody = z.object({ id: z.string(), confirm: z.literal("DELETE") });
 
 async function handlePost(ctx: ApiContext, req: IncomingMessage, res: ServerResponse, pathname: string, headers: Record<string, string>) {
   const origin = req.headers.origin;
@@ -184,6 +190,29 @@ async function handlePost(ctx: ApiContext, req: IncomingMessage, res: ServerResp
       const b = ResetBody.safeParse(body);
       if (!b.success) return bad(b.error);
       const r = ctx.trading.reset();
+      return send(res, r.ok ? 200 : 409, r, headers);
+    }
+    case "/api/strategies/preview": {
+      const b = StrategyBody.safeParse(body);
+      if (!b.success) return bad(b.error);
+      return send(res, 200, ctx.trading.previewStrategy(b.data.strategy), headers);
+    }
+    case "/api/strategies/save": {
+      const b = StrategyBody.safeParse(body);
+      if (!b.success) return bad(b.error);
+      const r = ctx.trading.upsertStrategy(b.data.strategy);
+      return send(res, r.ok ? 200 : 400, r, headers);
+    }
+    case "/api/strategies/toggle": {
+      const b = ToggleBody.safeParse(body);
+      if (!b.success) return bad(b.error);
+      const r = ctx.trading.setStrategyEnabled(b.data.id, b.data.enabled);
+      return send(res, r.ok ? 200 : 404, r, headers);
+    }
+    case "/api/strategies/delete": {
+      const b = DeleteBody.safeParse(body);
+      if (!b.success) return bad(b.error);
+      const r = ctx.trading.deleteStrategy(b.data.id);
       return send(res, r.ok ? 200 : 409, r, headers);
     }
     default:

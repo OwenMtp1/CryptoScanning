@@ -31,6 +31,7 @@ export function openPosition(id: string, intent: OrderIntent, fill: Fill, strate
     highestPrice: entry,
     stopLevel: entry * (1 - x.stopLossPct / 100),
     trailingLevel: x.trailingStopPct === null ? null : entry * (1 - x.trailingStopPct / 100),
+    trailingStopPct: x.trailingStopPct,
     takeProfitLevel: x.takeProfitPct === null ? null : entry * (1 + x.takeProfitPct / 100),
     maxDurationSec: x.maxDurationSec,
     lastPrice: entry,
@@ -44,14 +45,20 @@ export function openPosition(id: string, intent: OrderIntent, fill: Fill, strate
   };
 }
 
-/** Update last/highest price and the trailing level. */
-export function markPosition(p: Position, price: number, ts: number, strategy: Strategy | undefined) {
+/** Trailing % of a position (derived from its levels for states saved before the field existed). */
+export function trailingPctOf(p: Position): number | null {
+  if (p.trailingStopPct !== undefined) return p.trailingStopPct;
+  return p.trailingLevel === null ? null : (1 - p.trailingLevel / p.highestPrice) * 100;
+}
+
+/** Update last/highest price and the trailing level (uses the position's own frozen rules). */
+export function markPosition(p: Position, price: number, ts: number) {
   if (!(price > 0)) return;
   p.lastPrice = price;
   p.lastPriceAt = ts;
   if (price > p.highestPrice) {
+    const t = trailingPctOf(p);
     p.highestPrice = price;
-    const t = strategy?.exit.trailingStopPct ?? null;
     if (t !== null) p.trailingLevel = price * (1 - t / 100);
   }
 }

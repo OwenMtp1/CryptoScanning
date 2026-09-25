@@ -17,6 +17,7 @@ import { MarketDataEngine } from "../src/market-data/market-data-engine.js";
 import type { MarketDataSource, SourceStatus } from "../src/market-data/source.js";
 import { RadarService } from "../src/signal-engine/radar-service.js";
 import { PaperStore } from "../src/trading/paper-store.js";
+import { StrategyStore } from "../src/trading/strategy-store.js";
 import { TradingService, type TradingMode } from "../src/trading/trading-service.js";
 
 const T0 = Date.parse("2026-09-25T10:00:00Z");
@@ -35,7 +36,7 @@ function testConfig(overrides: { rotation?: boolean } = {}): TradingConfig {
   });
 }
 
-async function harness(mode: TradingMode, config: TradingConfig = testConfig(), storeDir: string | null = null) {
+async function harness(mode: TradingMode, config: TradingConfig = testConfig(), storeDir: string | null = null, strategyDir: string | null = null) {
   let now = T0;
   const events: LogEvent[] = [];
   const log = (e: EmitInput) => void events.push({ id: String(events.length), ts: new Date(now).toISOString(), ...e });
@@ -69,6 +70,7 @@ async function harness(mode: TradingMode, config: TradingConfig = testConfig(), 
     market,
     log,
     store: storeDir ? new PaperStore(storeDir) : null,
+    strategyStore: strategyDir ? new StrategyStore(strategyDir) : null,
     now: () => now,
     schedule: (fn, ms) => void queue.push({ at: now + ms, fn }),
   });
@@ -250,5 +252,93 @@ describe("TradingService (PAPER, end-to-end on simulated market)", () => {
     expect(v.emergencyStop).not.toBeNull();
     h.run(2);
     expect(h.trading.view().initialValue).toBeCloseTo(500, 6);
+  });
+});
+
+describe("Strategy Builder (server side)", () => {
+  const base = () => structuredClone(testConfig().strategies[0]!);
+
+  it("creates, persists and reloads strategies; logs every change", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "radar-strat-"));
+    const h = await harness("RADAR", testConfig(), null, dir);
+    const r = h.trading.upsertStrategy({ ...base(), id: "my-strat", name: "Ma stratégie", sizing: { quoteAmount: 5 } });
+    expect(r.ok).toBe(true);
+    expect(h.trading.listStrategies().map((s) => s.id)).toEqual(["bump-momentum", "my-strat"]);
+    expect(h.types()).toContain("STRATEGY_CREATED");
+    const upd = h.trading.upsertStrategy({ ...base(), id: "my-strat", name: "Renommée", sizing: { quoteAmount: 7 } });
+    expect(upd).toMatchObject({ ok: true, created: false });
+    expect(h.types()).toContain("STRATEGY_UPDATED");
+    const h2 = await harness("RADAR", testConfig(), null, dir);
+    expect(h2.trading.listStrategies().find((s) => s.id === "my-strat")).toMatchObject({ name: "Renommée", sizing: { quoteAmount: 7 } });
+  });
+
+  it("ATTACK: a strategy cannot exceed the Risk Engine limits nor skip the stop loss", async () => {
+    const h = await harness("RADAR");
+    const big = h.trading.upsertStrategy({ ...base(), id: "big", sizing: { quoteAmount: 1000 } });
+    expect(big.ok).toBe(false);
+    if (!big.ok) expect(big.issues.join(" ")).toMatch(/maximum par trade/);
+    const noStop = h.trading.upsertStrategy({ ...base(), id: "nostop", exit: { trailingStopPct: 2 } });
+    expect(noStop.ok).toBe(false);
+    const badId = h.trading.upsertStrategy({ ...base(), id: "../../etc" });
+    expect(badId.ok).toBe(false);
+    expect(h.trading.listStrategies().map((s) => s.id)).toEqual(["bump-momentum"]);
+  });
+
+  it("disabling a strategy stops new entries", async () => {
+    const h = await harness("PAPER");
+    expect(h.trading.setStrategyEnabled("bump-momentum", false)).toEqual({ ok: true });
+    h.run(420);
+    h.pump("SOL-EUR");
+    h.run(200);
+    expect(h.types()).not.toContain("STRATEGY_TRIGGERED");
+  });
+
+  it("editing a strategy keeps the rules of open positions; deletion waits for them to close", async () => {
+    const h = await harness("PAPER", testConfig({ rotation: false }));
+    h.run(420);
+    h.pump("SOL-EUR");
+    let checked = false;
+    h.run(600, () => {
+      const v = h.trading.view();
+      if (!checked && v.positions.length > 0) {
+        checked = true;
+        const pos = v.positions[0]!;
+        expect(h.trading.deleteStrategy(pos.strategyId).ok).toBe(false);
+        h.trading.upsertStrategy({ ...base(), exit: { stopLossPct: 2, trailingStopPct: 10, takeProfitPct: null, maxDurationSec: 300 } });
+        expect(h.trading.view().positions[0]!.trailingStopPct).toBe(1);
+      }
+    });
+    expect(checked).toBe(true);
+    expect(h.trading.view().positions).toEqual([]);
+    expect(h.trading.deleteStrategy("bump-momentum")).toEqual({ ok: true });
+    expect(h.types()).toContain("STRATEGY_DELETED");
+  });
+
+  it("previews an unsaved strategy on the live market without storing it", async () => {
+    const h = await harness("RADAR");
+    h.run(420);
+    h.pump("SOL-EUR");
+    let seen = false;
+    h.run(150, () => {
+      if (seen) return;
+      const p = h.trading.previewStrategy({ ...base(), id: "draft" });
+      if (p.matches.some((m) => m.productId === "SOL-EUR")) {
+        seen = true;
+        expect(p.valid).toBe(true);
+        expect(p.matches.find((m) => m.productId === "SOL-EUR")!.risk).not.toBeNull();
+      }
+    });
+    expect(seen).toBe(true);
+    const calm = h.trading.previewStrategy({ ...base(), id: "draft" });
+    expect(calm.evaluated).toBeGreaterThan(5);
+    expect(h.trading.listStrategies().map((s) => s.id)).toEqual(["bump-momentum"]);
+    expect(h.trading.previewStrategy({ id: "x" })).toMatchObject({ valid: false });
+  });
+
+  it("refuses to start on a corrupted strategies file", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "radar-strat-"));
+    const { writeFileSync } = await import("node:fs");
+    writeFileSync(path.join(dir, "strategies.json"), JSON.stringify({ version: 1, savedAt: "x", strategies: [{ id: "a" }] }));
+    await expect(harness("RADAR", testConfig(), null, dir)).rejects.toThrow(/stratégies invalide/);
   });
 });

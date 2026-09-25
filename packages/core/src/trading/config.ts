@@ -177,6 +177,21 @@ export const TradingConfigSchema = z
   });
 export type TradingConfig = z.infer<typeof TradingConfigSchema>;
 
+/** Rules a strategy must respect with respect to the risk limits (checked on save and at startup). */
+export function strategyRiskIssues(strategy: Strategy, risk: RiskConfig): string[] {
+  const issues: string[] = [];
+  if (strategy.sizing.quoteAmount > risk.maxTradeQuote)
+    issues.push(`montant ${strategy.sizing.quoteAmount} > maximum par trade du Risk Engine (${risk.maxTradeQuote})`);
+  return issues;
+}
+
+/** File written by the Strategy Builder (data/strategies.json). */
+export const StrategiesFileSchema = z.object({
+  version: z.literal(1),
+  savedAt: z.string(),
+  strategies: z.array(StrategySchema),
+});
+
 export function defaultTradingConfig(): TradingConfig {
   return TradingConfigSchema.parse({});
 }

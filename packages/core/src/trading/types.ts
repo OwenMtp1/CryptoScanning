@@ -120,6 +120,11 @@ export interface Position {
   stopLevel: number;
   /** Trailing level following the highest price (null if disabled). */
   trailingLevel: number | null;
+  /**
+   * Exit rules frozen at entry: editing or deleting the strategy later never
+   * changes the protection of an open position.
+   */
+  trailingStopPct: number | null;
   takeProfitLevel: number | null;
   maxDurationSec: number | null;
   lastPrice: number;

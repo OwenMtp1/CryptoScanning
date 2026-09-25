@@ -89,6 +89,22 @@ describe("HTTP API", () => {
     expect((await post("/api/nope", {})).status).toBe(404);
   });
 
+  it("Strategy Builder endpoints validate against risk limits", async () => {
+    const post = (p: string, body: unknown) =>
+      fetch(`${base}${p}`, { method: "POST", headers: { "content-type": "application/json", "x-radar-action": "confirm" }, body: JSON.stringify(body) });
+    const list = (await (await fetch(`${base}/api/strategies`)).json()) as any;
+    expect(list.limits).toMatchObject({ currency: "EUR", maxTradeQuote: 10 });
+    const s0 = list.strategies[0];
+    expect((await post("/api/strategies/save", { strategy: { ...s0, sizing: { quoteAmount: 99 } } })).status).toBe(400);
+    const prev = (await (await post("/api/strategies/preview", { strategy: s0 })).json()) as any;
+    expect(prev.valid).toBe(true);
+    expect((await post("/api/strategies/toggle", { id: s0.id, enabled: false })).status).toBe(200);
+    expect((await post("/api/strategies/delete", { id: s0.id })).status).toBe(400); // confirmation missing
+    expect((await post("/api/strategies/toggle", { id: "nope", enabled: true })).status).toBe(404);
+    const unauth = await fetch(`${base}/api/strategies/save`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+    expect(unauth.status).toBe(403);
+  });
+
   it("rejects unknown methods and unknown hosts (DNS rebinding)", async () => {
     expect((await fetch(`${base}/api/status`, { method: "PUT" })).status).toBe(405);
     expect((await fetch(`${base}/api/nope`)).status).toBe(404);

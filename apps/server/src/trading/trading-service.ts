@@ -19,6 +19,8 @@ import {
   missingInitialMarks,
   openPosition,
   planRotation,
+  StrategySchema,
+  strategyRiskIssues,
   Prng,
   simulateMarketOrder,
   toTradeRecord,
@@ -38,6 +40,7 @@ import {
   type RadarRow,
   type RadarSnapshot,
   type StrategyProposal,
+  type StrategyPreview,
   type TradingView,
   type RiskContext,
   type RunMode,
@@ -49,6 +52,7 @@ import {
 import type { MarketDataEngine } from "../market-data/market-data-engine.js";
 import type { LogFn } from "../market-data/source.js";
 import type { PaperStateFile, PaperStore } from "./paper-store.js";
+import type { StrategyStore } from "./strategy-store.js";
 
 export type TradingMode = RunMode;
 
@@ -59,6 +63,8 @@ export interface TradingServiceOptions {
   log: LogFn;
   /** Persistence (PAPER only). */
   store: PaperStore | null;
+  /** Strategies edited in the Strategy Builder (overrides config strategies when the file exists). */
+  strategyStore?: StrategyStore | null;
   now?: () => number;
   /** Delayed execution (latency simulation); injectable for tests. */
   schedule?: (fn: () => void, ms: number) => void;
@@ -79,6 +85,7 @@ const MAX_ORDERS_KEPT = 200;
  */
 export class TradingService {
   private readonly cfg: TradingConfig;
+  private strategies: Strategy[];
   private readonly now: () => number;
   private readonly schedule: (fn: () => void, ms: number) => void;
   private readonly rng: Prng;
@@ -103,6 +110,12 @@ export class TradingService {
 
   constructor(private readonly opts: TradingServiceOptions) {
     this.cfg = opts.config;
+    const saved = opts.strategyStore?.load() ?? null;
+    this.strategies = saved ?? opts.config.strategies;
+    for (const st of this.strategies) {
+      const issues = strategyRiskIssues(st, this.cfg.risk);
+      if (issues.length) throw new Error(`stratégie ${st.id} invalide : ${issues.join(", ")}`);
+    }
     this.now = opts.now ?? Date.now;
     this.schedule = opts.schedule ?? ((fn, ms) => void setTimeout(fn, ms));
     this.rng = new Prng(this.cfg.paper.seed);
@@ -227,7 +240,7 @@ export class TradingService {
   }
 
   private strategy(id: string | null): Strategy | undefined {
-    return this.cfg.strategies.find((s) => s.id === id);
+    return this.strategies.find((s) => s.id === id);
   }
 
   // ─── Main loop ────────────────────────────────────────────────────────────
@@ -275,7 +288,7 @@ export class TradingService {
       const price = r?.metrics.price ?? null;
       if (price !== null && p.status === "open") {
         const before = p.highestPrice;
-        markPosition(p, price, now, this.strategy(p.strategyId));
+        markPosition(p, price, now);
         if (p.highestPrice !== before) this.dirty = true;
       }
       if (p.status !== "open" || [...this.pending.values()].some((o) => o.intent.productId === p.productId)) continue;
@@ -351,7 +364,7 @@ export class TradingService {
   }
 
   private evaluateEntries(now: number) {
-    const candidates = findEntryCandidates(this.cfg.strategies, [...this.rows.values()]);
+    const candidates = findEntryCandidates(this.strategies, [...this.rows.values()]);
     const busy = new Set([...this.openPositions().map((p) => p.productId), ...[...this.pending.values()].map((o) => o.intent.productId)]);
     for (const c of candidates) {
       const id = c.row.metrics.productId;
@@ -631,6 +644,108 @@ export class TradingService {
     return { ok: true };
   }
 
+  // ─── Strategy Builder ─────────────────────────────────────────────────────
+
+  listStrategies(): Strategy[] {
+    return this.strategies;
+  }
+
+  /** Read-only limits shown in the builder (risk limits are not editable from the UI). */
+  strategyLimits() {
+    return {
+      currency: this.cfg.portfolio.currency,
+      maxTradeQuote: this.cfg.risk.maxTradeQuote,
+      takerFeePct: this.cfg.paper.takerFeePct,
+      mode: this.opts.mode,
+    };
+  }
+
+  private validate(input: unknown): { ok: true; strategy: Strategy } | { ok: false; issues: string[] } {
+    const r = StrategySchema.safeParse(input);
+    if (!r.success) return { ok: false, issues: r.error.issues.map((i) => `${i.path.join(".") || "stratégie"} : ${i.message}`) };
+    const issues = strategyRiskIssues(r.data, this.cfg.risk);
+    return issues.length ? { ok: false, issues } : { ok: true, strategy: r.data };
+  }
+
+  private saveStrategies(next: Strategy[]) {
+    this.opts.strategyStore?.save(next);
+    this.strategies = next;
+  }
+
+  /** Create or update (by id). Limits of the Risk Engine cannot be exceeded by a strategy. */
+  upsertStrategy(input: unknown): { ok: true; strategy: Strategy; created: boolean } | { ok: false; issues: string[] } {
+    const v = this.validate(input);
+    if (!v.ok) return v;
+    const before = this.strategies.find((s) => s.id === v.strategy.id);
+    const next = before ? this.strategies.map((s) => (s.id === v.strategy.id ? v.strategy : s)) : [...this.strategies, v.strategy];
+    this.saveStrategies(next);
+    this.opts.log({
+      type: before ? "STRATEGY_UPDATED" : "STRATEGY_CREATED",
+      level: "warn",
+      strategy: v.strategy.id,
+      success: true,
+      message: `Stratégie ${before ? "modifiée" : "créée"} depuis le Strategy Builder : ${v.strategy.name}${v.strategy.enabled ? "" : " (désactivée)"}. Les positions ouvertes gardent leurs règles de sortie.`,
+      data: { before: before ?? null, after: v.strategy },
+    });
+    return { ok: true, strategy: v.strategy, created: !before };
+  }
+
+  setStrategyEnabled(id: string, enabled: boolean): { ok: boolean; reason?: string } {
+    const st = this.strategies.find((s) => s.id === id);
+    if (!st) return { ok: false, reason: "stratégie introuvable" };
+    return this.upsertStrategy({ ...st, enabled }).ok ? { ok: true } : { ok: false, reason: "validation impossible" };
+  }
+
+  /** Refused while the strategy has open positions or orders in flight. */
+  deleteStrategy(id: string): { ok: boolean; reason?: string } {
+    const st = this.strategies.find((s) => s.id === id);
+    if (!st) return { ok: false, reason: "stratégie introuvable" };
+    if (this.openPositions().some((p) => p.strategyId === id) || [...this.pending.values()].some((o) => o.intent.strategyId === id))
+      return { ok: false, reason: "des positions ou ordres de cette stratégie sont en cours : désactive-la et attends leur clôture" };
+    this.saveStrategies(this.strategies.filter((s) => s.id !== id));
+    this.opts.log({ type: "STRATEGY_DELETED", level: "warn", strategy: id, success: true, message: `Stratégie supprimée : ${st.name}`, data: { before: st } });
+    return { ok: true };
+  }
+
+  /** Evaluate an unsaved strategy against the current market (nothing is stored or executed). */
+  previewStrategy(input: unknown): StrategyPreview {
+    const v = this.validate(input);
+    if (!v.ok) return { valid: false, issues: v.issues, matches: [], closest: [], evaluated: 0 };
+    const s = v.strategy;
+    const now = this.now();
+    const scored = [...this.rows.values()]
+      .filter((row) => row.metrics.price !== null && inUniverse(s, row))
+      .map((row) => {
+        const results = evaluateConditions(s, row);
+        return { row, results, passed: results.filter((r) => r.passed).length };
+      });
+    const toItem = (x: (typeof scored)[number]) => {
+      const all = x.passed === x.results.length;
+      let risk: { approved: boolean; reasons: string[] } | null = null;
+      if (all && this.portfolio.initialized) {
+        const d = checkIntent(
+          { id: "preview", ts: now, kind: "ENTRY", productId: x.row.metrics.productId, side: "BUY", quoteSize: s.sizing.quoteAmount, baseSize: null, strategyId: s.id, positionId: null, referencePrice: x.row.metrics.price as number, reason: "preview", exitReason: null, signalScore: x.row.scores.composite },
+          this.riskContext({ productId: x.row.metrics.productId } as OrderIntent, now),
+        );
+        risk = { approved: d.approved, reasons: d.reasons };
+      }
+      return {
+        productId: x.row.metrics.productId,
+        passed: x.passed,
+        total: x.results.length,
+        conditions: x.results.map((r) => ({ label: r.label, passed: r.passed, value: r.value })),
+        risk,
+      };
+    };
+    const matches = scored.filter((x) => x.passed === x.results.length).map(toItem);
+    const closest = scored
+      .filter((x) => x.passed < x.results.length)
+      .sort((a, b) => b.passed - a.passed || b.row.scores.composite - a.row.scores.composite)
+      .slice(0, 8)
+      .map(toItem);
+    return { valid: true, issues: [], matches, closest, evaluated: scored.length };
+  }
+
   // ─── Views ────────────────────────────────────────────────────────────────
 
   private performance(): PerformanceStats {
@@ -670,7 +785,7 @@ export class TradingService {
       emergencyStop: this.breakers.emergency ?? null,
       limits,
       riskLevel: blocked ? "BLOCKED" : usage >= 0.75 ? "HIGH" : usage >= 0.4 ? "MEDIUM" : "LOW",
-      strategies: this.cfg.strategies,
+      strategies: this.strategies,
       fees: { takerFeePct: this.cfg.paper.takerFeePct, assumption: "hypothèse prudente non vérifiée — à ajuster selon ton palier Coinbase" },
     };
   }
@@ -693,7 +808,7 @@ export class TradingService {
     if (!row) return [];
     const now = this.now();
     const out: StrategyProposal[] = [];
-    for (const s of this.cfg.strategies) {
+    for (const s of this.strategies) {
       if (!s.enabled || !inUniverse(s, row)) continue;
       const results = evaluateConditions(s, row);
       const all = results.every((r) => r.passed);

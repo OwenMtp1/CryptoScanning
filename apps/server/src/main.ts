@@ -7,6 +7,7 @@ import { SimulatedMarketSource } from "./market-data/simulated-source.js";
 import type { MarketDataSource } from "./market-data/source.js";
 import { RadarService } from "./signal-engine/radar-service.js";
 import { PaperStore } from "./trading/paper-store.js";
+import { StrategyStore } from "./trading/strategy-store.js";
 import { TradingService } from "./trading/trading-service.js";
 import { IMPLEMENTED_MODES, parseMode } from "./config/mode.js";
 const PRODUCTS_RETRY_MS = 30_000;
@@ -68,6 +69,7 @@ async function main() {
       market,
       log: emit,
       store: tradingMode === "PAPER" ? new PaperStore(env.paperDataDir) : null,
+      strategyStore: new StrategyStore(env.strategiesDir),
     });
   } catch (err) {
     log.emit({ type: "API_ERROR", level: "error", success: false, message: `Démarrage du trading impossible : ${(err as Error).message}` });

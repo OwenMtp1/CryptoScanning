@@ -118,6 +118,7 @@ export function position(o: Partial<Position> = {}): Position {
     highestPrice: 100,
     stopLevel: 98,
     trailingLevel: 98,
+    trailingStopPct: 2,
     takeProfitLevel: null,
     maxDurationSec: null,
     lastPrice: 100,

@@ -62,27 +62,38 @@ describe("positions: stop from entry vs trailing stop", () => {
   it("stop from entry: 100 → 98 exits with STOP_LOSS", () => {
     const p = openPosition("p", entry(), fill(), { ...strategy, exit: { ...strategy.exit, trailingStopPct: null } }, "SOL");
     expect(p.stopLevel).toBeCloseTo(98);
-    markPosition(p, 98.5, T0 + 1000, strategy);
+    markPosition(p, 98.5, T0 + 1000);
     expect(checkExit(p, T0 + 1000)).toBeNull();
-    markPosition(p, 97.9, T0 + 2000, strategy);
+    markPosition(p, 97.9, T0 + 2000);
     expect(checkExit(p, T0 + 2000)).toBe("STOP_LOSS");
   });
 
   it("trailing stop follows the highest price: 100 → 105 → 110, exit at 107.8", () => {
     const p = openPosition("p", entry(), fill(), strategy, "SOL");
-    for (const px of [105, 110, 109]) markPosition(p, px, T0, strategy);
+    for (const px of [105, 110, 109]) markPosition(p, px, T0);
     expect(p.highestPrice).toBe(110);
     expect(p.trailingLevel).toBeCloseTo(107.8);
     expect(p.stopLevel).toBeCloseTo(98);
     expect(checkExit(p, T0)).toBeNull();
-    markPosition(p, 107.7, T0, strategy);
+    markPosition(p, 107.7, T0);
     expect(checkExit(p, T0)).toBe("TRAILING_STOP");
+  });
+
+  it("an open position keeps its own exit rules when the strategy changes", () => {
+    const editable = structuredClone(strategy);
+    const p = openPosition("p", entry(), fill(), editable, "SOL");
+    editable.exit.trailingStopPct = 10; // edited after entry: must not affect the open position
+    markPosition(p, 110, T0);
+    expect(p.trailingLevel).toBeCloseTo(107.8);
+    const legacy = { ...p, trailingStopPct: undefined as unknown as null };
+    markPosition(legacy, 120, T0);
+    expect(legacy.trailingLevel).toBeCloseTo(117.6, 6); // derived from saved levels
   });
 
   it("take profit and max duration", () => {
     const s = { ...strategy, exit: { ...strategy.exit, takeProfitPct: 5, maxDurationSec: 60 } };
     const p = openPosition("p", entry(), fill(), s, "SOL");
-    markPosition(p, 105, T0, s);
+    markPosition(p, 105, T0);
     expect(checkExit(p, T0)).toBe("TAKE_PROFIT");
     const q = openPosition("q", entry(), fill(), s, "SOL");
     expect(checkExit(q, T0 + 59_000)).toBeNull();
@@ -91,7 +102,7 @@ describe("positions: stop from entry vs trailing stop", () => {
 
   it("records entry, highest, exit and P&L including fees, across partial exits", () => {
     const p = openPosition("p", entry(), fill({ fee: 0.12 }), strategy, "SOL");
-    markPosition(p, 110, T0, strategy);
+    markPosition(p, 110, T0);
     expect(unrealizedPnl(p)).toBeCloseTo(0.1 * 110 - 10.12);
     const done1 = applyExitFill(p, fill({ side: "SELL", price: 108, baseQty: 0.06, quoteGross: 6.48, fee: 0.08, ts: T0 + 5000 }), "TRAILING_STOP", 0.0001);
     expect(done1).toBe(false);

@@ -36,6 +36,8 @@ export const EnvSchema = z.object({
   SIGNAL_CONFIG_FILE: z.string().default("config/signal-config.json"),
   TRADING_CONFIG_FILE: z.string().default("config/trading.json"),
   PAPER_DATA_DIR: z.string().default("data/paper"),
+  /** Strategies saved by the Strategy Builder (data/strategies.json). */
+  STRATEGIES_DIR: z.string().default("data"),
   /** Comma-separated list of dashboard origins allowed by CORS. */
   DASHBOARD_ORIGINS: z
     .string()
@@ -43,7 +45,7 @@ export const EnvSchema = z.object({
     .default(["http://localhost:3000", "http://127.0.0.1:3000"]),
 });
 
-export type Env = z.infer<typeof EnvSchema> & { logDir: string; signalConfigPath: string; tradingConfigPath: string; paperDataDir: string };
+export type Env = z.infer<typeof EnvSchema> & { logDir: string; signalConfigPath: string; tradingConfigPath: string; paperDataDir: string; strategiesDir: string };
 
 export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
   const env = EnvSchema.parse(source);
@@ -53,6 +55,7 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
     signalConfigPath: path.resolve(REPO_ROOT, env.SIGNAL_CONFIG_FILE),
     tradingConfigPath: path.resolve(REPO_ROOT, env.TRADING_CONFIG_FILE),
     paperDataDir: path.resolve(REPO_ROOT, env.PAPER_DATA_DIR),
+    strategiesDir: path.resolve(REPO_ROOT, env.STRATEGIES_DIR),
   };
 }
 

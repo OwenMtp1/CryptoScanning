@@ -78,3 +78,21 @@ export interface TradingView {
   fees: { takerFeePct: number; assumption: string };
 }
 
+
+export interface StrategyPreviewItem {
+  productId: string;
+  passed: number;
+  total: number;
+  conditions: { label: string; passed: boolean; value: number | null }[];
+  risk: { approved: boolean; reasons: string[] } | null;
+}
+
+export interface StrategyPreview {
+  valid: boolean;
+  issues: string[];
+  /** Products matching every condition right now. */
+  matches: StrategyPreviewItem[];
+  /** Products matching the most conditions (not all). */
+  closest: StrategyPreviewItem[];
+  evaluated: number;
+}
