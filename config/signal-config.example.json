@@ -1,0 +1,50 @@
+{
+  "surgeThresholdPct": {
+    "10s": 0.8,
+    "30s": 1.5,
+    "1m": 2.5,
+    "5m": 5
+  },
+  "volume": {
+    "recentWindowSec": 60,
+    "baselineWindowSec": 1800,
+    "minBaselineHistorySec": 300,
+    "spikeRatio": 3
+  },
+  "acceleration": {
+    "segments": 4,
+    "segmentSec": 15,
+    "minAccelerationPct": 0.5
+  },
+  "liquidity": {
+    "maxSpreadPct": 0.5,
+    "minTopBookDepthQuote": 1000,
+    "min24hVolumeQuote": 50000
+  },
+  "volatility": {
+    "windowSec": 300,
+    "stepSec": 10
+  },
+  "scoring": {
+    "weights": {
+      "momentum": 0.3,
+      "volume": 0.25,
+      "acceleration": 0.2,
+      "liquidity": 0.15,
+      "volatility": 0.1
+    },
+    "refs": {
+      "accelerationPct": 2,
+      "topBookDepthQuote": 50000,
+      "volume24hQuote": 10000000,
+      "volatilityPct": 0.5
+    }
+  },
+  "opportunity": {
+    "minScore": 65,
+    "expireAfterSec": 30,
+    "hysteresis": 10
+  },
+  "signalCooldownSec": 60,
+  "feedStaleAfterSec": 15
+}

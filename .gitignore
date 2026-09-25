@@ -24,3 +24,8 @@ logs/
 .DS_Store
 .idea/
 .vscode/
+config/signal-config.json
+
+# Next.js generated
+next-env.d.ts
+*.tsbuildinfo
