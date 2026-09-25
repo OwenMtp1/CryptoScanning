@@ -32,6 +32,15 @@ Portefeuille virtuel par défaut : 500 € (400 € protégés, 100 € tradable
 Tout ordre passe par le **Risk Engine**. Le bouton 🛑 **EMERGENCY STOP** bloque immédiatement toute nouvelle entrée.
 Détails et hypothèses (notamment les **frais**) : [docs/03-phase-2-paper-trading.md](docs/03-phase-2-paper-trading.md).
 
+### Connecter ton compte Coinbase (lecture seule, optionnel)
+
+Clé CDP **View uniquement**, sans Transfer (une clé avec Transfer est refusée). Elle donne accès :
+- aux soldes ;
+- au **palier de frais réel**, appliqué au paper trading ;
+- aux produits disponibles pour ton compte.
+
+Aucun ordre n'est passé. Voir [docs/05-coinbase-integration.md](docs/05-coinbase-integration.md).
+
 ### Passer aux données Coinbase réelles (publiques, sans clé)
 
 ```bash

@@ -66,6 +66,8 @@ export interface TradingServiceOptions {
   /** Strategies edited in the Strategy Builder (overrides config strategies when the file exists). */
   strategyStore?: StrategyStore | null;
   now?: () => number;
+  /** Products available to the connected Coinbase account (null = public mode). */
+  accountProducts?: () => ReadonlySet<string> | null;
   /** Delayed execution (latency simulation); injectable for tests. */
   schedule?: (fn: () => void, ms: number) => void;
 }
@@ -107,6 +109,7 @@ export class TradingService {
   private dirty = false;
   private waitingLogged = false;
   private lastEquitySampleAt = 0;
+  private feesFromAccount = false;
 
   constructor(private readonly opts: TradingServiceOptions) {
     this.cfg = opts.config;
@@ -222,6 +225,7 @@ export class TradingService {
       capital: capitalBreakdown(this.portfolio, open, this.cfg.portfolio),
       openPositions: open,
       pendingProductIds: new Set([...this.pending.values()].map((o) => o.intent.productId)),
+      accountProducts: this.opts.accountProducts?.() ?? null,
       pendingEntries: { count: pendingEntries.length, quote: pendingEntries.reduce((s, o) => s + (o.intent.quoteSize ?? 0), 0) },
       product: this.opts.market.store.getProduct(intent.productId),
       metrics: this.opts.market.store.metrics(intent.productId, evalTime) ?? undefined,
@@ -644,6 +648,15 @@ export class TradingService {
     return { ok: true };
   }
 
+  /** Real fee tier of the connected account (when paper.feeSource = "account"). */
+  applyAccountFees(takerPct: number | null) {
+    if (this.cfg.paper.feeSource !== "account" || takerPct === null || takerPct === this.cfg.paper.takerFeePct) return;
+    const before = this.cfg.paper.takerFeePct;
+    this.cfg.paper.takerFeePct = takerPct;
+    this.feesFromAccount = true;
+    this.opts.log({ type: "CONFIG_LOADED", level: "info", message: `Frais taker du compte Coinbase appliqués à la simulation : ${takerPct.toFixed(3)} % (au lieu de ${before} %)` });
+  }
+
   // ─── Strategy Builder ─────────────────────────────────────────────────────
 
   listStrategies(): Strategy[] {
@@ -786,7 +799,10 @@ export class TradingService {
       limits,
       riskLevel: blocked ? "BLOCKED" : usage >= 0.75 ? "HIGH" : usage >= 0.4 ? "MEDIUM" : "LOW",
       strategies: this.strategies,
-      fees: { takerFeePct: this.cfg.paper.takerFeePct, assumption: "hypothèse prudente non vérifiée — à ajuster selon ton palier Coinbase" },
+      fees: {
+        takerFeePct: this.cfg.paper.takerFeePct,
+        assumption: this.feesFromAccount ? "palier réel de ton compte Coinbase (transaction_summary)" : "hypothèse prudente non vérifiée — connecte ta clé Coinbase ou ajuste selon ton palier",
+      },
     };
   }
 

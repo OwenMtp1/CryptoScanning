@@ -27,6 +27,18 @@ interface PublicConfig {
     apiKeyConfigured: boolean;
     keyPermissions: null | Record<string, unknown>;
     tradabilityVerified: boolean;
+    account?: {
+      configured: boolean;
+      state: "disabled" | "connecting" | "connected" | "refused" | "error";
+      message: string | null;
+      keyName: string | null;
+      algorithm: string | null;
+      permissions: { canView: boolean; canTrade: boolean; canTransfer: boolean; portfolioUuid: string | null; portfolioType: string | null } | null;
+      balances: { currency: string; available: number; hold: number }[];
+      fees: { pricingTier: string | null; takerFeePct: number | null; makerFeePct: number | null; volume30d: number | null } | null;
+      accountProducts: number | null;
+      lastSyncAt: number | null;
+    };
   };
 }
 
@@ -84,10 +96,33 @@ export default function SettingsPage() {
           <Row k="Limite REST (client)" v={`${cfg.coinbase.restMaxRps} req/s`} />
           <Row k="Produits par connexion WS" v={cfg.coinbase.wsProductsPerConnection} />
           <Row k="Authentification" v={cfg.coinbase.authentication} />
-          <Row k="Clé API" v={cfg.coinbase.apiKeyConfigured === true ? "configurée" : "aucune (non requise)"} />
-          <Row k="Permissions détectées" v={cfg.coinbase.keyPermissions ? JSON.stringify(cfg.coinbase.keyPermissions) : "— (pas de clé)"} />
-          <Row k="Portfolio" v="— (pas de clé)" />
-          <Row k="Tradabilité compte/région" v={cfg.coinbase.tradabilityVerified ? "vérifiée" : <span className="text-amber-300">non vérifiée</span>} />
+          {(() => {
+            const a = cfg.coinbase.account;
+            const state = a?.state ?? "disabled";
+            const tone = { connected: "text-emerald-400", connecting: "text-sky-300", disabled: "text-slate-400", refused: "text-rose-400", error: "text-rose-400" }[state];
+            const label = { connected: "connecté (lecture seule)", connecting: "connexion…", disabled: "aucune clé (données publiques)", refused: "CLÉ REFUSÉE", error: "erreur" }[state];
+            const p = a?.permissions;
+            return (
+              <>
+                <Row k="Compte" v={<span className={`font-semibold ${tone}`}>{label}</span>} />
+                {a?.message && <p className={`py-1 text-xs ${state === "refused" || state === "error" ? "text-rose-300" : "text-slate-500"}`}>{a.message}</p>}
+                {a?.keyName && <Row k="Clé" v={`${a.keyName} (${a.algorithm})`} />}
+                <Row
+                  k="Permissions détectées"
+                  v={p ? `View ${p.canView ? "✓" : "✗"} · Trade ${p.canTrade ? "✓" : "✗"} · Transfer ${p.canTransfer ? "⚠ OUI" : "✗ (bien)"}` : "—"}
+                />
+                <Row k="Portfolio" v={p ? `${p.portfolioType ?? "?"} ${p.portfolioUuid ? `(${p.portfolioUuid.slice(0, 8)}…)` : ""}` : "—"} />
+                <Row k="Soldes" v={a?.balances.length ? a.balances.map((b) => `${b.available} ${b.currency}`).join(" · ") : "—"} />
+                <Row
+                  k="Palier de frais"
+                  v={a?.fees ? `${a.fees.pricingTier ?? "?"} — taker ${a.fees.takerFeePct?.toFixed(3) ?? "?"} % / maker ${a.fees.makerFeePct?.toFixed(3) ?? "?"} %` : "—"}
+                />
+                <Row k="Produits disponibles pour le compte" v={a?.accountProducts ?? "—"} />
+                <Row k="Tradabilité compte/région" v={cfg.coinbase.tradabilityVerified ? "vérifiée (liste authentifiée)" : <span className="text-amber-300">non vérifiée</span>} />
+                <Row k="Passage d'ordres réels" v={<span className="text-slate-500">non implémenté (phase LIVE)</span>} />
+              </>
+            );
+          })()}
         </Card>
 
         <Card title={`Stratégie / signaux (${cfg.signalConfigSource === "file" ? "fichier" : "défauts"})`}>

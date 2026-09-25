@@ -149,6 +149,11 @@ export class MarketDataEngine {
     return this.store.allMetrics(this.evaluationTime());
   }
 
+  /** Mark products confirmed as available by the authenticated product list of the account. */
+  setAccountProducts(ids: ReadonlySet<string>) {
+    for (const p of this.products) p.tradabilityVerified = ids.has(p.productId);
+  }
+
   getProducts(): Product[] {
     return this.products;
   }

@@ -150,6 +150,8 @@ export const PaperConfigSchema = z.object({
    * your tier in Coinbase Advanced → Fees and adjust.
    */
   takerFeePct: nonNeg.default(1.2),
+  /** "account": use the real taker rate of the connected Coinbase account when available; "config": always takerFeePct. */
+  feeSource: z.enum(["account", "config"]).default("account"),
   latencyMs: z.tuple([nonNeg, nonNeg]).default([150, 600]),
   /** Random slippage component, in basis points (0 → this value). */
   baseSlippageBps: nonNeg.default(2),

@@ -90,6 +90,11 @@ describe("Risk Engine — entries", () => {
     expect(failed(limitOnly)).toContain("product_eligible");
   });
 
+  it("refuses products not available to the connected Coinbase account", () => {
+    expect(failed(checkIntent(entry(), ctx({ accountProducts: new Set(["BTC-EUR"]) })))).toContain("product_eligible");
+    expect(checkIntent(entry(), ctx({ accountProducts: new Set(["SOL-EUR"]) })).approved).toBe(true);
+  });
+
   it("ATTACK: incoherent price", () => {
     expect(failed(checkIntent(entry({ referencePrice: 130 }), ctx()))).toContain("price_sanity");
     expect(failed(checkIntent(entry(), ctx({ metrics: metrics("SOL-EUR", { bestBid: 101, bestAsk: 100 }) })))).toContain("price_sanity");

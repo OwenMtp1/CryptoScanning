@@ -35,6 +35,11 @@ export interface RiskContext {
   openPositions: Position[];
   /** Products with an order in flight. */
   pendingProductIds: ReadonlySet<string>;
+  /**
+   * Products available to the connected Coinbase account (authenticated
+   * product list). null = no account connected (public data only).
+   */
+  accountProducts?: ReadonlySet<string> | null;
   /** Entry orders in flight (not yet positions) — counted against limits. */
   pendingEntries: { count: number; quote: number };
   product: Product | undefined;
@@ -109,7 +114,8 @@ function marketChecks(intent: OrderIntent, ctx: RiskContext, add: Add, strictDat
     !flags?.viewOnly &&
     !flags?.auctionMode &&
     !flags?.limitOnly &&
-    p.quoteCurrency.toUpperCase() === ctx.portfolio.currency.toUpperCase();
+    p.quoteCurrency.toUpperCase() === ctx.portfolio.currency.toUpperCase() &&
+    (!ctx.accountProducts || ctx.accountProducts.has(p.productId));
   add(
     "product_eligible",
     eligible,
@@ -117,7 +123,9 @@ function marketChecks(intent: OrderIntent, ctx: RiskContext, add: Add, strictDat
       ? "produit inconnu"
       : eligible
         ? `${p.productId} SPOT online, coté en ${p.quoteCurrency}`
-        : `${p.productId} non éligible (type ${p.productType}, statut ${p.status}, devise ${p.quoteCurrency}${flags?.limitOnly ? ", limit-only" : ""}${flags?.cancelOnly ? ", cancel-only" : ""})`,
+        : ctx.accountProducts && !ctx.accountProducts.has(p.productId)
+          ? `${p.productId} non disponible pour ton compte Coinbase`
+          : `${p.productId} non éligible (type ${p.productType}, statut ${p.status}, devise ${p.quoteCurrency}${flags?.limitOnly ? ", limit-only" : ""}${flags?.cancelOnly ? ", cancel-only" : ""})`,
   );
   const spread = m?.spreadPct ?? null;
   add("spread", spread !== null && spread <= r.maxSpreadPct, spread === null ? "spread inconnu" : `spread ${spread.toFixed(3)} % (max ${r.maxSpreadPct} %)`);

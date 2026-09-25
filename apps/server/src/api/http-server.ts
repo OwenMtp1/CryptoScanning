@@ -5,12 +5,14 @@ import type { EventLog } from "../logging/event-log.js";
 import type { MarketDataEngine } from "../market-data/market-data-engine.js";
 import type { RadarService } from "../signal-engine/radar-service.js";
 import type { TradingService } from "../trading/trading-service.js";
+import type { AccountService } from "../coinbase/account-service.js";
 
 export interface ApiContext {
   log: EventLog;
   market: MarketDataEngine;
   radar: RadarService;
   trading: TradingService;
+  account?: AccountService;
   /** Public, non-secret configuration exposed to the dashboard. */
   publicConfig: () => Record<string, unknown>;
   /** Dashboard origins allowed by CORS (exact match). */
@@ -104,6 +106,8 @@ function handle(ctx: ApiContext, req: IncomingMessage, res: ServerResponse) {
       return send(res, 200, ctx.trading.ordersList(), headers);
     case "/api/trading/equity":
       return send(res, 200, ctx.trading.equityCurve(), headers);
+    case "/api/account":
+      return send(res, 200, redact(ctx.account?.view() ?? { configured: false, state: "disabled" }), headers);
     case "/api/strategies":
       return send(res, 200, { strategies: ctx.trading.listStrategies(), limits: ctx.trading.strategyLimits() }, headers);
     case "/api/signals": {

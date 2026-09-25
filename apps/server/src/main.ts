@@ -8,6 +8,9 @@ import type { MarketDataSource } from "./market-data/source.js";
 import { RadarService } from "./signal-engine/radar-service.js";
 import { PaperStore } from "./trading/paper-store.js";
 import { StrategyStore } from "./trading/strategy-store.js";
+import { AccountService } from "./coinbase/account-service.js";
+import { loadCredentials } from "./coinbase/credentials.js";
+import { CoinbasePublicRest } from "./market-data/coinbase-rest.js";
 import { TradingService } from "./trading/trading-service.js";
 import { IMPLEMENTED_MODES, parseMode } from "./config/mode.js";
 const PRODUCTS_RETRY_MS = 30_000;
@@ -40,6 +43,12 @@ async function main() {
     data: { tradingConfig },
   });
 
+  // Coinbase account (optional, READ-ONLY). Secrets stay in this process only.
+  const creds = loadCredentials(process.env);
+  const accountRest = new CoinbasePublicRest({ baseUrl: env.COINBASE_REST_BASE_URL, maxRps: env.COINBASE_REST_MAX_RPS, log: emit, key: creds.key });
+  let onAccountSync: (taker: number | null, ids: ReadonlySet<string>) => void = () => {};
+  const account = new AccountService(accountRest, creds.key, creds.source, creds.error, emit, (t, ids) => onAccountSync(t, ids));
+
   const source: MarketDataSource =
     env.DATA_SOURCE === "coinbase"
       ? new CoinbaseMarketSource({
@@ -70,12 +79,17 @@ async function main() {
       log: emit,
       store: tradingMode === "PAPER" ? new PaperStore(env.paperDataDir) : null,
       strategyStore: new StrategyStore(env.strategiesDir),
+      accountProducts: () => account.productIds(),
     });
   } catch (err) {
     log.emit({ type: "API_ERROR", level: "error", success: false, message: `Démarrage du trading impossible : ${(err as Error).message}` });
     await log.close();
     process.exit(1);
   }
+  onAccountSync = (taker, ids) => {
+    trading.applyAccountFees(taker);
+    market.setAccountProducts(ids);
+  };
   const radar = new RadarService(market, signalConfig, emit, env.EVAL_INTERVAL_MS, tradingMode);
   // Trading runs first on each snapshot so the dashboard stream sees fresh state.
   radar.subscribe((snap) => trading.onSnapshot(snap));
@@ -86,6 +100,7 @@ async function main() {
     market,
     radar,
     trading,
+    account,
     allowedOrigins: env.DASHBOARD_ORIGINS,
     startedAt,
     publicConfig: () => ({
@@ -104,10 +119,11 @@ async function main() {
         wsUrl: env.COINBASE_WS_URL,
         restMaxRps: env.COINBASE_REST_MAX_RPS,
         wsProductsPerConnection: env.WS_PRODUCTS_PER_CONNECTION,
-        authentication: "aucune (phase 1 : données publiques uniquement)",
-        apiKeyConfigured: false,
-        keyPermissions: null,
-        tradabilityVerified: false,
+        authentication: account.view().configured ? `clé CDP ${account.view().algorithm} (lecture seule)` : "aucune (données publiques uniquement)",
+        apiKeyConfigured: account.view().configured,
+        keyPermissions: account.view().permissions,
+        tradabilityVerified: account.view().state === "connected",
+        account: account.view(),
       },
     }),
   });
@@ -128,6 +144,7 @@ async function main() {
       await market.loadProducts();
       market.start();
       radar.start();
+      void account.start();
     } catch (err) {
       log.emit({
         type: "API_ERROR",
@@ -145,6 +162,7 @@ async function main() {
     if (retryTimer) clearTimeout(retryTimer);
     radar.stop();
     market.stop();
+    account.stop();
     server.closeAllConnections();
     server.close();
     await log.close();
