@@ -14,6 +14,9 @@ Elle est conçue pour évoluer ensuite vers le Paper Trading, puis vers le Live 
 > confluences entre types d'indices indépendants, mesure honnête de la réussite de chaque type de signal, alertes Discord.
 > Ce sont des **informations, pas des conseils** : aucun ordre n'est passé. Voir [docs/06](docs/06-flux-informations-multi-sources.md).
 
+> **Site en ligne (données réelles)** : le Flux peut être publié gratuitement sur Cloudflare Pages, sans serveur —
+> voir [docs/07](docs/07-mise-en-ligne-cloudflare.md).
+
 ## Démarrage rapide
 
 Prérequis : Node.js ≥ 22.12 et pnpm 10.

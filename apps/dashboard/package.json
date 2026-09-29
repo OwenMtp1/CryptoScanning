@@ -9,7 +9,8 @@
     "start": "next start --hostname 127.0.0.1 --port 3000",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "echo \"(dashboard: no unit tests in phase 1)\"",
-    "build:demo": "node demo/build.mjs"
+    "build:demo": "node demo/build.mjs",
+    "build:web": "node demo/build.mjs --web"
   },
   "dependencies": {
     "@radar/core": "workspace:*",

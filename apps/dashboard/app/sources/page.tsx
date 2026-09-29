@@ -87,7 +87,7 @@ export default function SourcesPage() {
       <div className="grid gap-4 lg:grid-cols-2">
         <Card title="Discord" className="min-w-0">
           {!dc ? (
-            <p className="text-sm text-slate-500">{d.simulated ? "Démo : pas d'envoi Discord (possible uniquement avec le serveur local et ton webhook)." : "Non disponible."}</p>
+            <p className="text-sm text-slate-500">{d.simulated ? "Démo : pas d'envoi Discord (possible uniquement avec le serveur local et ton webhook)." : d.web ? "Site web : pas d'alertes Discord (elles demandent un programme qui tourne 24 h/24, l'analyse s'arrête quand la page est fermée)." : "Non disponible."}</p>
           ) : (
             <>
               <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
@@ -114,7 +114,7 @@ export default function SourcesPage() {
 
         <Card title="Budget CoinGecko" className="min-w-0">
           {!cg ? (
-            <p className="text-sm text-slate-500">{d.simulated ? "Démo : CoinGecko simulé, pas de quota." : "CoinGecko désactivé."}</p>
+            <p className="text-sm text-slate-500">{d.simulated ? "Démo : CoinGecko simulé, pas de quota." : d.web ? "Site web : CoinGecko passe par le cache partagé Cloudflare (rafraîchi toutes les 30 à 60 min), ce qui préserve le quota quel que soit le nombre de visiteurs." : "CoinGecko désactivé."}</p>
           ) : (
             <>
               <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
@@ -211,7 +211,7 @@ export default function SourcesPage() {
             <Row k="Funding extrême" v={`± ${cfg.coingecko.fundingExtremePct} %`} />
             <Row k="Hausse open interest" v={`+${cfg.coingecko.openInterestSurgePct} %`} />
             <Row k="DEX : liquidité min." v={`$${cfg.coingecko.dex.minReserveUsd.toLocaleString("en-US")}`} />
-            <Row k="Confluence" v={`${cfg.confluence.minSources} sources en ${cfg.confluence.windowMin} min`} />
+            <Row k="Confluence" v={`${cfg.confluence.minSources} types d'indices en ${cfg.confluence.windowMin} min`} />
             <Row k="Anti-doublon" v={`${cfg.cooldownMin} min par crypto × type`} />
           </div>
         </Card>

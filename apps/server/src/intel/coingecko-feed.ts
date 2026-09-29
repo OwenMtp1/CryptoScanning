@@ -44,6 +44,10 @@ export interface CoinGeckoFeedOptions {
   lastRun?: Record<string, number>;
   tickMs?: number;
   now?: () => number;
+  /** Override the API root (e.g. a caching proxy such as the Cloudflare function `/api/cg`). */
+  baseUrl?: string;
+  /** Multiply every base interval (e.g. 3 when a shared proxy cache serves many viewers). */
+  intervalMultiplier?: number;
 }
 
 export class CoinGeckoFeed {
@@ -61,6 +65,7 @@ export class CoinGeckoFeed {
   }
 
   get baseUrl() {
+    if (this.o.baseUrl) return this.o.baseUrl;
     return this.o.plan === "pro" ? "https://pro-api.coingecko.com/api/v3" : "https://api.coingecko.com/api/v3";
   }
 
@@ -141,7 +146,7 @@ export class CoinGeckoFeed {
 
   /** Planned calls per hour at base intervals. */
   private demandPerHour() {
-    return this.tasks.reduce((s, t) => s + 60 / t.baseIntervalMin, 0);
+    return this.tasks.reduce((s, t) => s + 60 / (t.baseIntervalMin * this.mult), 0);
   }
 
   /** How much every interval is stretched to stay within the budget (≥ 1). */
@@ -151,12 +156,16 @@ export class CoinGeckoFeed {
   }
 
   schedule(now = this.now()) {
-    const k = this.stretch(now);
+    const k = this.stretch(now) * this.mult;
     return this.tasks.map((t) => {
       const every = t.baseIntervalMin * k;
       const last = this.lastRun[t.id] ?? 0;
       return { id: t.id, everyMin: Number.isFinite(every) ? Math.round(every) : null, lastRunAt: last || null, nextAt: Number.isFinite(every) ? (last ? last + every * 60_000 : now) : null };
     });
+  }
+
+  private get mult() {
+    return this.o.intervalMultiplier ?? 1;
   }
 
   lastRuns() {
@@ -178,7 +187,7 @@ export class CoinGeckoFeed {
   async tick(): Promise<string | null> {
     const now = this.now();
     if (this.busy || now < this.backoffUntil) return null;
-    const k = this.stretch(now);
+    const k = this.stretch(now) * this.mult;
     if (!Number.isFinite(k)) return null;
     let best: { t: Task; overdue: number } | null = null;
     for (const t of this.tasks) {

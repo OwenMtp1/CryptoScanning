@@ -49,6 +49,8 @@ export interface SourcesResponse {
   binanceFeed?: { pairs: number; messages: number; decodeErrors: number; connected: boolean; lastMessageAt: number | null } | null;
   newsFeeds?: { name: string; url: string; lang: string; ok: boolean | null; lastSuccessAt: number | null; lastError: string | null; items: number }[];
   simulated?: boolean;
+  /** Live website (browser runtime + Cloudflare functions). */
+  web?: boolean;
 }
 
 export const KIND_LABEL: Record<IntelKind, string> = {

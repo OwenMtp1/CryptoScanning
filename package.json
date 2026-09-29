@@ -14,6 +14,7 @@
     "test": "pnpm -r test",
     "typecheck": "pnpm -r typecheck",
     "build": "pnpm --filter @radar/dashboard build",
-    "build:demo": "pnpm --filter @radar/dashboard build:demo"
+    "build:demo": "pnpm --filter @radar/dashboard build:demo",
+    "build:web": "pnpm --filter @radar/dashboard build:web"
   }
 }

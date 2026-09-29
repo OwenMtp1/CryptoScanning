@@ -1,0 +1,80 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+// @ts-expect-error plain JS modules deployed as Cloudflare Pages Functions
+import { onRequestGet as cg } from "../../../deploy/cloudflare/functions/api/cg/[[path]].js";
+// @ts-expect-error plain JS
+import { onRequestGet as newsList } from "../../../deploy/cloudflare/functions/api/news/index.js";
+// @ts-expect-error plain JS
+import { onRequestGet as newsFeed } from "../../../deploy/cloudflare/functions/api/news/[id].js";
+
+type Fn = (ctx: unknown) => Promise<Response> | Response;
+const store = new Map<string, Response>();
+let upstream: { url: string; headers: Record<string, string> }[] = [];
+let upstreamStatus = 200;
+
+beforeEach(() => {
+  store.clear();
+  upstream = [];
+  upstreamStatus = 200;
+  vi.stubGlobal("caches", {
+    default: {
+      match: async (r: Request) => store.get(r.url)?.clone(),
+      put: async (r: Request, res: Response) => void store.set(r.url, res),
+    },
+  });
+  vi.stubGlobal("fetch", async (url: string, init: { headers?: Record<string, string> }) => {
+    upstream.push({ url, headers: init?.headers ?? {} });
+    return new Response(upstreamStatus === 200 ? '{"ok":true}' : "nope", { status: upstreamStatus, headers: { "content-type": "application/json" } });
+  });
+});
+afterEach(() => vi.unstubAllGlobals());
+
+const ctx = (url: string, params: Record<string, unknown>, env: Record<string, string> = {}) => {
+  const waits: Promise<unknown>[] = [];
+  return { c: { request: new Request(url), params, env, waitUntil: (p: Promise<unknown>) => waits.push(p) }, waits };
+};
+const call = async (fn: Fn, url: string, params: Record<string, unknown>, env?: Record<string, string>) => {
+  const { c, waits } = ctx(url, params, env);
+  const r = await fn(c);
+  await Promise.all(waits);
+  return r;
+};
+
+describe("Cloudflare function /api/cg", () => {
+  it("maps whitelisted requests to canonical CoinGecko URLs with the secret key header, and caches them", async () => {
+    const r = await call(cg, "https://x/api/cg/coins/markets?vs_currency=eur&page=2&per_page=9", { path: ["coins", "markets"] }, { COINGECKO_API_KEY: "CG-secret" });
+    expect(r.status).toBe(200);
+    expect(upstream[0]!.url).toBe("https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=250&page=2&sparkline=false&price_change_percentage=1h%2C24h%2C7d");
+    expect(upstream[0]!.headers["x-cg-demo-api-key"]).toBe("CG-secret");
+    expect(r.headers.get("cache-control")).toBe("public, max-age=1800");
+    expect(await r.text()).not.toContain("CG-secret");
+    await call(cg, "https://x/api/cg/coins/markets?page=2&cachebust=1", { path: ["coins", "markets"] }, { COINGECKO_API_KEY: "CG-secret" });
+    expect(upstream).toHaveLength(1); // served from cache
+  });
+  it("refuses anything outside the whitelist (no open proxy, bounded pages)", async () => {
+    expect((await call(cg, "https://x/api/cg/coins/list", { path: ["coins", "list"] })).status).toBe(404);
+    expect((await call(cg, "https://x/api/cg/coins/markets?page=99", { path: ["coins", "markets"] })).status).toBe(404);
+    expect(upstream).toHaveLength(0);
+  });
+  it("uses the pro host for paid plans and caches upstream errors briefly", async () => {
+    upstreamStatus = 429;
+    const r = await call(cg, "https://x/api/cg/derivatives", { path: ["derivatives"] }, { COINGECKO_API_KEY: "k", COINGECKO_PLAN: "pro" });
+    expect(upstream[0]!.url).toBe("https://pro-api.coingecko.com/api/v3/derivatives");
+    expect(upstream[0]!.headers["x-cg-pro-api-key"]).toBe("k");
+    expect(r.status).toBe(429);
+    expect(r.headers.get("retry-after")).toBe("120");
+    expect(r.headers.get("cache-control")).toBe("public, max-age=120");
+  });
+});
+
+describe("Cloudflare function /api/news", () => {
+  it("lists feeds and proxies only whitelisted ones", async () => {
+    const list = (await (await newsList()).json()) as { feeds: { id: string }[] };
+    expect(list.feeds.length).toBe(8);
+    const r = await call(newsFeed, "https://x/api/news/decrypt", { id: "decrypt" });
+    expect(r.status).toBe(200);
+    expect(upstream[0]!.url).toBe("https://decrypt.co/feed");
+    expect(r.headers.get("content-type")).toContain("xml");
+    expect((await call(newsFeed, "https://x/api/news/evil", { id: "https://evil.example" })).status).toBe(404);
+    expect(upstream).toHaveLength(1);
+  });
+});
