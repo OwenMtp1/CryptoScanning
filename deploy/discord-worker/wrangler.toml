@@ -1,0 +1,17 @@
+# Crypto Radar — Discord alert worker. See docs/08-bot-discord.md.
+name = "crypto-radar-discord"
+main = "dist/worker.js"
+compatibility_date = "2025-09-01"
+# Variables and secrets are set in the Cloudflare dashboard; keep them on deploy.
+keep_vars = true
+
+[triggers]
+crons = ["*/5 * * * *"]
+
+[[durable_objects.bindings]]
+name = "RADAR"
+class_name = "RadarState"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["RadarState"]

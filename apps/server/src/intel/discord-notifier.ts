@@ -221,6 +221,24 @@ export class DiscordNotifier {
     }
   }
 
+  /** Persistable state (for a scheduled worker that restarts between runs). */
+  exportState() {
+    const dayAgo = this.now() - 86_400_000;
+    return { lastCoinAt: Object.fromEntries([...this.lastCoinAt].filter(([, t]) => t > dayAgo)), sentAt: [...this.sentAt], lastSentAt: this.lastSentAt, lastDigestAt: this.lastDigestAt, digest: this.digest.slice(-200), queue: this.queue.slice(0, 20), lastError: this.lastError, pausedUntil: this.pausedUntil };
+  }
+
+  importState(s: Partial<ReturnType<DiscordNotifier["exportState"]>> | null | undefined) {
+    if (!s) return;
+    for (const [k, v] of Object.entries(s.lastCoinAt ?? {})) this.lastCoinAt.set(k, v);
+    this.sentAt.push(...(s.sentAt ?? []));
+    this.lastSentAt = s.lastSentAt ?? null;
+    if (s.lastDigestAt) this.lastDigestAt = s.lastDigestAt;
+    this.digest.push(...(s.digest ?? []));
+    this.queue.push(...(s.queue ?? []));
+    this.lastError = s.lastError ?? this.lastError;
+    this.pausedUntil = s.pausedUntil ?? 0;
+  }
+
   /** Send a test message right away (dashboard button). */
   async test(): Promise<{ ok: boolean; message: string }> {
     if (!this.url) return { ok: false, message: this.lastError ?? "DISCORD_WEBHOOK_URL non configurée (fichier .env)" };

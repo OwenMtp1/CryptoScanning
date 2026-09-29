@@ -8,6 +8,7 @@ ordinateur, avec les **vraies données** : Binance en temps réel, CoinGecko, DE
 ```
 Ton navigateur ──WebSocket──▶ Binance (prix de toutes les cryptos, en direct)
       │
+      ├──▶ /api/coinbase ─┐ (cryptos Coinbase, toutes les minutes)
       ├──▶ /api/cg/…    ─┐
       ├──▶ /api/news/…   ├─ fonctions Cloudflare (dans ce dépôt : deploy/cloudflare/functions)
       └──▶ /api/binance ─┘   → CoinGecko, flux RSS, liste des paires Binance, avec cache partagé
@@ -22,7 +23,7 @@ Ton navigateur ──WebSocket──▶ Binance (prix de toutes les cryptos, en 
 
 **Limites de ce mode :**
 - l'analyse ne tourne que lorsque la page est ouverte ;
-- pas d'alertes Discord : pour ça, il faut le serveur 24 h/24 (voir docs/06) ;
+- pas d'alertes Discord depuis la page : elles viennent du worker 24 h/24 (voir docs/08) ;
 - l'historique (page Performance) reste dans le navigateur utilisé.
 
 ## Mise en place pas à pas (≈ 10 minutes)

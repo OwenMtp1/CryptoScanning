@@ -286,10 +286,14 @@ export class IntelEngine {
 
   /** Persistence helpers. */
   exportState() {
-    return { signals: this.signals.slice(-1500), news: this.news.slice(-800) };
+    // Only cooldowns that can still block something (≤ 1 day old relative to the latest one).
+    const latest = Math.max(0, ...this.lastEmit.values());
+    const cooldowns = Object.fromEntries([...this.lastEmit].filter(([, t]) => t > latest - 86_400_000));
+    return { signals: this.signals.slice(-1500), news: this.news.slice(-800), cooldowns };
   }
 
-  importState(s: { signals?: IntelSignal[]; news?: NewsItem[] }) {
+  importState(s: { signals?: IntelSignal[]; news?: NewsItem[]; cooldowns?: Record<string, number> }) {
+    for (const [k, v] of Object.entries(s.cooldowns ?? {})) if (typeof v === "number") this.lastEmit.set(k, v);
     for (const sig of s.signals ?? []) this.signals.push(sig);
     for (const n of s.news ?? []) if (!this.newsIds.has(n.id)) {
       this.newsIds.add(n.id);

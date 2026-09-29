@@ -6,6 +6,7 @@
  */
 import {
   CoinMatcher,
+  CoinbasePriceHistory,
   IntelEngine,
   OutcomeTracker,
   aggregateDerivatives,
@@ -29,6 +30,7 @@ import {
   type LiveTracker,
   type NewsItem,
   type Opportunity,
+  type Product,
   type RawFeedItem,
   type Signal,
   type SourceHealth,
@@ -180,6 +182,27 @@ export class IntelService {
       h.items = tracker.coins().length;
       h.lastSuccessAt = now;
     }
+    this.emit(this.engine.ingest(cands, now), []);
+  }
+
+  /**
+   * Snapshot of the public Coinbase product list (prices). Coins already
+   * streamed live by Binance keep their Binance data; the others get live
+   * 5 / 15 min changes from Coinbase.
+   */
+  onCoinbaseProducts(products: Product[], history: CoinbasePriceHistory, now = this.now()) {
+    const snaps = history.update(products, now);
+    this.engine.markCoinbase(snaps.map((s) => s.coin), now);
+    const cands: Candidate[] = [];
+    let live = 0;
+    for (const s of snaps) {
+      const row = this.engine.coin(s.coin);
+      if (row?.onBinance && row.live && now - row.live.updatedAt < 120_000) continue;
+      this.engine.upsertLive(s, now, "coinbase");
+      live++;
+      for (const c of detectLive(s, this.cfg.binance, "coinbase")) cands.push({ ...c, url: `https://www.coinbase.com/advanced-trade/spot/${s.pair}` });
+    }
+    this.setSourceState("coinbase", "ok", `${snaps.length} cryptos cotées sur Coinbase, dont ${live} suivies via Coinbase (absentes du flux Binance)`, now, snaps.length);
     this.emit(this.engine.ingest(cands, now), []);
   }
 

@@ -9,7 +9,7 @@
  *   read cross-origin from a browser).
  * No Discord here: alerts need a process that runs 24/7.
  */
-import { IntelConfigSchema, parseFeed, type LogEvent } from "@radar/core";
+import { CoinbasePriceHistory, IntelConfigSchema, parseFeed, parseProductsPage, type LogEvent, type Product } from "@radar/core";
 import { handleAction, handleGet, type RouteContext } from "../../server/src/api/routes";
 import { BinanceFeed } from "../../server/src/intel/binance-feed";
 import { CallBudget } from "../../server/src/intel/budget";
@@ -53,7 +53,7 @@ export async function startWeb(): Promise<DemoBackend> {
   const cfg = IntelConfigSchema.parse({ coingecko: { universeSize: 750 } });
   const log = new BrowserEventLog([], 1500);
   const emit = (e: Parameters<BrowserEventLog["emit"]>[0]) => void log.emit(e);
-  const svc = new IntelService({ cfg, log: emit, notifier: null, enabledSources: ["binance", "coingecko", "trending", "derivatives", "dex", "news"] });
+  const svc = new IntelService({ cfg, log: emit, notifier: null, enabledSources: ["binance", "coinbase", "coingecko", "trending", "derivatives", "dex", "news"] });
   const saved = load();
   svc.restore(saved);
 
@@ -114,6 +114,24 @@ export async function startWeb(): Promise<DemoBackend> {
     }
   };
 
+  // Coinbase: public product list (prices) every minute through the cached function.
+  const cbHistory = new CoinbasePriceHistory();
+  const pollCoinbase = async () => {
+    try {
+      const all: Product[] = [];
+      for (let page = 0; page < 4; page++) {
+        const r = await fetchText(`/api/coinbase/products?page=${page}`, { timeoutMs: 20_000 });
+        if (r.status !== 200) throw new Error(`HTTP ${r.status}${r.headers.get("x-upstream-status") ? ` (Coinbase a répondu ${r.headers.get("x-upstream-status")})` : ""}`);
+        const parsed = parseProductsPage(JSON.parse(r.text));
+        all.push(...parsed.products);
+        if (parsed.rawCount < 250) break;
+      }
+      svc.onCoinbaseProducts(all, cbHistory);
+    } catch (err) {
+      svc.setSourceState("coinbase", "down", `liste Coinbase indisponible : ${(err as Error).message}`);
+    }
+  };
+
   const save = () => {
     const st = svc.exportState({ cgLastRun: cg.lastRuns() });
     let keep = 4000;
@@ -132,6 +150,11 @@ export async function startWeb(): Promise<DemoBackend> {
   void binance.start();
   cg.start();
   void pollNews();
+  // Give Binance a head start so coins it streams are not duplicated by Coinbase.
+  setTimeout(() => {
+    void pollCoinbase();
+    setInterval(() => void pollCoinbase(), 60_000);
+  }, 20_000);
   setInterval(() => void pollNews(), NEWS_EVERY_MS);
   setInterval(() => svc.tickOutcomes(), 30_000);
   setInterval(save, 60_000);

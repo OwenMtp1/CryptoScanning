@@ -32,3 +32,4 @@ export * from "./intel/engine.js";
 export * from "./intel/tracker.js";
 export * from "./intel/live.js";
 export * from "./intel/discord.js";
+export * from "./intel/coinbase-live.js";
