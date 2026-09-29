@@ -1,0 +1,114 @@
+{
+  "binance": {
+    "enabled": true,
+    "quotes": [
+      "USDT",
+      "USDC",
+      "FDUSD"
+    ],
+    "pumpPct5m": 4,
+    "pumpPct15m": 7,
+    "dumpPct5m": 5,
+    "dumpPct15m": 9,
+    "volumeSurgeRatio": 4,
+    "minVolume24hUsd": 200000
+  },
+  "coingecko": {
+    "enabled": true,
+    "monthlyCallBudget": 10000,
+    "maxCallsPerMinute": 30,
+    "universeSize": 1000,
+    "minMarketCapUsd": 1000000,
+    "moverPct1h": 8,
+    "crashPct1h": 10,
+    "volumeMcapRatio": 0.6,
+    "nearAthPct": 3,
+    "fundingExtremePct": 0.05,
+    "openInterestSurgePct": 15,
+    "dex": {
+      "enabled": true,
+      "minReserveUsd": 30000,
+      "minVolume1hUsd": 50000,
+      "minBuySellRatio": 1.5,
+      "pumpPct1h": 25,
+      "rugDropPct1h": 40,
+      "maxPoolAgeHours": 48
+    }
+  },
+  "news": {
+    "enabled": true,
+    "intervalSec": 300,
+    "feeds": [
+      {
+        "name": "CoinDesk",
+        "url": "https://www.coindesk.com/arc/outboundfeeds/rss/",
+        "lang": "en"
+      },
+      {
+        "name": "Cointelegraph",
+        "url": "https://cointelegraph.com/rss",
+        "lang": "en"
+      },
+      {
+        "name": "Decrypt",
+        "url": "https://decrypt.co/feed",
+        "lang": "en"
+      },
+      {
+        "name": "The Block",
+        "url": "https://www.theblock.co/rss.xml",
+        "lang": "en"
+      },
+      {
+        "name": "Bitcoin Magazine",
+        "url": "https://bitcoinmagazine.com/.rss/full/",
+        "lang": "en"
+      },
+      {
+        "name": "CryptoSlate",
+        "url": "https://cryptoslate.com/feed/",
+        "lang": "en"
+      },
+      {
+        "name": "Cryptoast",
+        "url": "https://cryptoast.fr/feed/",
+        "lang": "fr"
+      },
+      {
+        "name": "Journal du Coin",
+        "url": "https://journalducoin.com/feed/",
+        "lang": "fr"
+      }
+    ]
+  },
+  "confluence": {
+    "windowMin": 120,
+    "minSources": 2
+  },
+  "tracking": {
+    "horizonsMin": [
+      15,
+      60,
+      240,
+      1440
+    ],
+    "hitThresholdPct": 2,
+    "maxTracked": 20000
+  },
+  "cooldownMin": 60,
+  "discord": {
+    "enabled": true,
+    "minStrength": 70,
+    "kinds": [],
+    "directions": [
+      "bullish",
+      "bearish"
+    ],
+    "perCoinCooldownMin": 60,
+    "digestMin": 15,
+    "maxMessagesPerHour": 30,
+    "mentionRoleId": null,
+    "mentionMinStrength": 90,
+    "includeNews": true
+  }
+}

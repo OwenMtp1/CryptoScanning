@@ -9,6 +9,11 @@ Elle est conçue pour évoluer ensuite vers le Paper Trading, puis vers le Live 
 >
 > Le mode **LIVE est refusé au démarrage** : il n'est pas implémenté.
 
+> **Nouveau : Flux d'informations multi-sources** (page d'accueil « Flux »). Toutes les cryptos (Binance en temps réel,
+> CoinGecko, tendances, dérivés, DEX on-chain, actualités RSS en/fr) → signaux « va exploser ? / va chuter ? » expliqués,
+> confluences entre types d'indices indépendants, mesure honnête de la réussite de chaque type de signal, alertes Discord.
+> Ce sont des **informations, pas des conseils** : aucun ordre n'est passé. Voir [docs/06](docs/06-flux-informations-multi-sources.md).
+
 ## Démarrage rapide
 
 Prérequis : Node.js ≥ 22.12 et pnpm 10.

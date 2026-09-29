@@ -13,6 +13,12 @@ const MAX_SIGNALS = 5000;
 const MAX_NEWS = 3000;
 /** Sources that can be combined for confluence (DEX symbols are ambiguous across tokens). */
 const CONFLUENCE_SOURCES: ReadonlySet<IntelSource> = new Set(["binance", "coinbase", "coingecko", "trending", "derivatives", "news"]);
+/**
+ * Independent families of evidence. Binance, Coinbase and CoinGecko all see
+ * the same price move, so they count as ONE family: a confluence needs
+ * agreement between different kinds of information (price, attention, leverage).
+ */
+const FAMILY: Partial<Record<IntelSource, string>> = { binance: "prix", coinbase: "prix", coingecko: "prix", trending: "attention", news: "actualités", derivatives: "dérivés" };
 
 export interface IntelFilter {
   direction?: Direction;
@@ -186,7 +192,8 @@ export class IntelEngine {
       if (s.coin === sig.coin && s.direction === sig.direction && s.kind !== "CONFLUENCE" && CONFLUENCE_SOURCES.has(s.source)) related.push(s);
     }
     const sources = new Set(related.map((s) => s.source));
-    if (sources.size < this.cfg.confluence.minSources) return null;
+    const families = new Set(related.map((s) => FAMILY[s.source] ?? s.source));
+    if (families.size < this.cfg.confluence.minSources) return null;
     const key = `${sig.coin}:CONFLUENCE:${sig.direction}`;
     const last = this.lastEmit.get(key);
     if (last !== undefined && now - last < this.cfg.cooldownMin * 60_000) return null;
@@ -201,10 +208,10 @@ export class IntelEngine {
       kind: "CONFLUENCE",
       direction: sig.direction,
       source: sig.source,
-      strength: Math.min(100, top + 8 * (sources.size - 1)),
-      title: `${up ? "🚀" : "📉"} ${sig.coin} : ${sources.size} sources indépendantes ${up ? "haussières" : "baissières"} en ${this.cfg.confluence.windowMin} min`,
+      strength: Math.min(100, top + 8 * (families.size - 1)),
+      title: `${up ? "🚀" : "📉"} ${sig.coin} : ${families.size} types d'indices indépendants ${up ? "haussiers" : "baissiers"} (${[...families].join(" + ")}) en ${this.cfg.confluence.windowMin} min`,
       reasons: related.slice(0, 8).map((s) => `[${s.source}] ${s.title}`),
-      metrics: { sources: [...sources].join(","), signals: related.length, topStrength: top },
+      metrics: { sources: [...sources].join(","), families: [...families].join(","), signals: related.length, topStrength: top },
       priceUsd: sig.priceUsd ?? this.priceOf(sig.coin),
       url: related.find((s) => s.url)?.url ?? null,
       related: related.map((s) => s.id),

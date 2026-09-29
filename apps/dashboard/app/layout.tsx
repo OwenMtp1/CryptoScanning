@@ -2,12 +2,13 @@ import type { Metadata } from "next";
 import type { ReactNode } from "react";
 import { DialogProvider } from "@/components/Dialogs";
 import { Header } from "@/components/Header";
+import { CoinDrawerProvider } from "@/components/Intel";
 import { RadarStreamProvider } from "@/lib/stream";
 import "./globals.css";
 
 export const metadata: Metadata = {
   title: "Crypto Radar",
-  description: "Coinbase market radar — local, phase 1 (observation only)",
+  description: "Crypto signal radar — all coins, multi-source, local (information only)",
 };
 
 export default function RootLayout({ children }: { children: ReactNode }) {
@@ -16,8 +17,10 @@ export default function RootLayout({ children }: { children: ReactNode }) {
       <body className="min-h-screen font-sans antialiased">
         <RadarStreamProvider>
           <DialogProvider>
-            <Header />
-            <main className="mx-auto max-w-[1600px] px-4 py-6">{children}</main>
+            <CoinDrawerProvider>
+              <Header />
+              <main className="mx-auto max-w-[1600px] px-4 py-6">{children}</main>
+            </CoinDrawerProvider>
           </DialogProvider>
         </RadarStreamProvider>
       </body>

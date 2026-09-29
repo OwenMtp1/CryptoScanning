@@ -31,6 +31,7 @@ const usd = (x: number | null | undefined) => {
   if (x >= 1e3) return `${(x / 1e3).toFixed(1)} k$`;
   return `${x.toFixed(0)} $`;
 };
+const px = (p: number) => (p >= 1 ? `$${p.toLocaleString("en-US", { maximumFractionDigits: p >= 1000 ? 0 : 4 })}` : `$${p.toPrecision(4)}`);
 /** Map ratio = value/threshold (≥ 1) to a strength: threshold → 55, 3× threshold → 100. */
 export const strengthFromRatio = (ratio: number, base = 55) => clamp(base + (Math.max(0, ratio - 1) / 2) * (100 - base));
 /** Liquidity damping in [0.6, 1]: thin markets produce weaker (less reliable) signals. */
@@ -106,7 +107,7 @@ export function detectLive(s: LiveSnapshot, cfg: IntelConfig["binance"], source:
       kind: "BREAKOUT_24H_HIGH",
       direction: "bullish",
       strength: Math.round(clamp((55 + Math.min(30, (s.change15m ?? 0) * 3)) * liq)),
-      title: `${s.coin} casse son plus haut 24 h (${s.priceUsd})`,
+      title: `${s.coin} casse son plus haut 24 h (${px(s.priceUsd)})`,
       reasons: [`prix au plus haut des 24 h`, `15 min ${f(s.change15m)} %`],
       metrics,
     });
@@ -117,7 +118,7 @@ export function detectLive(s: LiveSnapshot, cfg: IntelConfig["binance"], source:
       kind: "BREAKDOWN_24H_LOW",
       direction: "bearish",
       strength: Math.round(clamp((55 + Math.min(30, -(s.change15m ?? 0) * 3)) * liq)),
-      title: `${s.coin} casse son plus bas 24 h (${s.priceUsd})`,
+      title: `${s.coin} casse son plus bas 24 h (${px(s.priceUsd)})`,
       reasons: [`prix au plus bas des 24 h`, `15 min ${f(s.change15m)} %`],
       metrics,
     });

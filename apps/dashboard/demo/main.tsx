@@ -2,7 +2,12 @@ import { createRoot } from "react-dom/client";
 import { useEffect, useState, type ComponentType } from "react";
 import LogsPage from "../app/logs/page";
 import OpportunitiesPage from "../app/opportunities/page";
-import RadarPage from "../app/page";
+import FluxPage from "../app/page";
+import PerformancePage from "../app/performance/page";
+import RadarPage from "../app/radar/page";
+import SourcesPage from "../app/sources/page";
+import UniversPage from "../app/univers/page";
+import { CoinDrawerProvider } from "../components/Intel";
 import PortfolioPage from "../app/portfolio/page";
 import PositionsPage from "../app/positions/page";
 import SettingsPage from "../app/settings/page";
@@ -15,7 +20,10 @@ import type { DemoStorage } from "./storage";
 import { currentPath } from "./shims/next-navigation";
 
 const ROUTES: Record<string, ComponentType> = {
-  "/": RadarPage,
+  "/": FluxPage,
+  "/univers": UniversPage,
+  "/performance": PerformancePage,
+  "/sources": SourcesPage,
   "/radar": RadarPage,
   "/opportunities": OpportunitiesPage,
   "/positions": PositionsPage,
@@ -44,7 +52,7 @@ function DemoBar({ info, storage }: { info: DemoInfo; storage: DemoStorage }) {
       <div className="mx-auto flex max-w-[1600px] flex-wrap items-center gap-x-4 gap-y-1">
         <strong className="tracking-wide">DÉMO</strong>
         <span>
-          Le moteur complet tourne dans ton navigateur. Le marché simulé avance tant que la page est ouverte. Sauvegarde : <strong>{storage.kind}</strong>
+          Le moteur complet tourne dans ton navigateur avec des sources <strong>simulées</strong> (marché, actualités, DEX…) : le flux avance tant que la page est ouverte. Sauvegarde : <strong>{storage.kind}</strong>
           {info.resumed && info.savedAt ? ` · session reprise (état du ${new Date(info.savedAt).toLocaleString("fr-FR")})` : ""}.
         </span>
         <button id="demo-reset" onClick={reset} className="ml-auto rounded border border-sky-700 px-2 py-0.5 hover:bg-sky-900">
@@ -65,15 +73,17 @@ function App({ info, storage }: { info: DemoInfo; storage: DemoStorage }) {
     window.addEventListener("hashchange", on);
     return () => window.removeEventListener("hashchange", on);
   }, []);
-  const Page = ROUTES[path] ?? RadarPage;
+  const Page = ROUTES[path] ?? FluxPage;
   return (
     <RadarStreamProvider>
       <DialogProvider>
-        <DemoBar info={info} storage={storage} />
-        <Header />
-        <main className="mx-auto max-w-[1600px] px-4 py-6">
-          <Page />
-        </main>
+        <CoinDrawerProvider>
+          <DemoBar info={info} storage={storage} />
+          <Header />
+          <main className="mx-auto max-w-[1600px] px-4 py-6">
+            <Page />
+          </main>
+        </CoinDrawerProvider>
       </DialogProvider>
     </RadarStreamProvider>
   );

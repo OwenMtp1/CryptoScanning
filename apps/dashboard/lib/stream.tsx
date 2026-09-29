@@ -1,6 +1,6 @@
 "use client";
 
-import type { LogEvent, RadarSnapshot, StatusResponse, TradingView } from "@radar/core";
+import type { IntelSignal, LogEvent, NewsItem, RadarSnapshot, StatusResponse, TradingView } from "@radar/core";
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { API_URL, demoBackend, getJson } from "./api";
 
@@ -13,10 +13,14 @@ interface RadarStream {
   trading: TradingView | null;
   /** Most recent live events (newest first). */
   events: LogEvent[];
+  /** Live intel signals and news received since the page was opened (newest first). */
+  intel: { signals: IntelSignal[]; news: NewsItem[]; rev: number };
 }
 
 const MAX_EVENTS = 300;
-const Ctx = createContext<RadarStream>({ state: "connecting", snapshot: null, status: null, trading: null, events: [] });
+const MAX_INTEL = 500;
+const EMPTY_INTEL = { signals: [] as IntelSignal[], news: [] as NewsItem[], rev: 0 };
+const Ctx = createContext<RadarStream>({ state: "connecting", snapshot: null, status: null, trading: null, events: [], intel: EMPTY_INTEL });
 
 /** One shared Server-Sent Events connection to the local API for all pages. */
 export function RadarStreamProvider({ children }: { children: ReactNode }) {
@@ -26,6 +30,7 @@ export function RadarStreamProvider({ children }: { children: ReactNode }) {
   const [trading, setTrading] = useState<TradingView | null>(null);
   const [events, setEvents] = useState<LogEvent[]>([]);
   const pending = useRef<LogEvent[]>([]);
+  const [intel, setIntel] = useState(EMPTY_INTEL);
 
   useEffect(() => {
     // Seed with recent history so panels are not empty after a page load.
@@ -42,6 +47,14 @@ export function RadarStreamProvider({ children }: { children: ReactNode }) {
       status: (d) => setStatus(d as StatusResponse),
       trading: (d) => setTrading(d as TradingView),
       log: (d) => pending.current.push(d as LogEvent),
+      intel: (d) => {
+        const b = d as { signals: IntelSignal[]; news: NewsItem[] };
+        setIntel((prev) => ({
+          signals: [...[...b.signals].reverse(), ...prev.signals].slice(0, MAX_INTEL),
+          news: [...[...b.news].reverse(), ...prev.news].slice(0, MAX_INTEL),
+          rev: prev.rev + 1,
+        }));
+      },
     };
     let close: () => void;
     const demo = demoBackend();
@@ -68,7 +81,7 @@ export function RadarStreamProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  return <Ctx.Provider value={{ state, snapshot, status, trading, events }}>{children}</Ctx.Provider>;
+  return <Ctx.Provider value={{ state, snapshot, status, trading, events, intel }}>{children}</Ctx.Provider>;
 }
 
 export function useRadarStream(): RadarStream {

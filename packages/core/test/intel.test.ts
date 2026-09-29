@@ -217,6 +217,14 @@ describe("IntelEngine", () => {
     // no second confluence within cooldown
     expect(e.ingest([cand({ source: "coingecko", kind: "TOP_MOVER_1H" })], T0 + 5000).some((s) => s.kind === "CONFLUENCE")).toBe(false);
   });
+  it("price sources alone never make a confluence (same move seen twice)", () => {
+    const e = new IntelEngine(cfg);
+    e.ingest([cand({ source: "binance" })], T0);
+    e.ingest([cand({ source: "coinbase", kind: "VOLUME_SURGE" })], T0 + 1000);
+    expect(e.ingest([cand({ source: "coingecko", kind: "TOP_MOVER_1H" })], T0 + 2000).some((s) => s.kind === "CONFLUENCE")).toBe(false);
+    const c = e.ingest([cand({ source: "derivatives", kind: "FUNDING_EXTREME_SHORT" })], T0 + 3000).find((s) => s.kind === "CONFLUENCE")!;
+    expect(c.metrics.families).toBe("dérivés,prix");
+  });
   it("confluence window expires", () => {
     const e = new IntelEngine(cfg);
     e.ingest([cand({ source: "binance" })], T0);

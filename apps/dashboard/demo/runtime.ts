@@ -12,6 +12,7 @@ import { parsePaperState, type PaperStateFile } from "../../server/src/trading/p
 import { TradingService } from "../../server/src/trading/trading-service";
 import type { DemoBackend } from "../lib/api";
 import { BrowserEventLog } from "./event-log";
+import { startIntelSim } from "./intel-sim";
 import { createStorage, type DemoStorage } from "./storage";
 
 const MAX_PERSISTED_TRADES = 150;
@@ -136,6 +137,10 @@ export async function startDemo(): Promise<{ backend: DemoBackend; info: DemoInf
   await market.loadProducts();
   market.start();
   radar.start();
+  const intelSim = startIntelSim(emit, market.getProducts().map((p) => p.baseCurrency));
+  ctx.intel = intelSim.service;
+  ctx.intelExtras = intelSim.extras;
+  radar.subscribeEvaluations((e) => intelSim.service.onCoinbaseEvaluation(e));
   emit({ type: "SYSTEM_STARTED", level: "info", success: true, message: `Démo démarrée dans le navigateur — mode PAPER, données simulées — sauvegarde : ${storage.kind}${paper ? " (session précédente reprise)" : ""}` });
 
   const persist = () => {
@@ -172,7 +177,9 @@ export async function startDemo(): Promise<{ backend: DemoBackend; info: DemoInf
         send("trading", trading.view());
       });
       const offLog = log.subscribe((e) => e.level !== "debug" && send("log", e));
+      const offIntel = ctx.intel?.subscribe((b) => send("intel", b)) ?? (() => {});
       return () => {
+        offIntel();
         offRadar();
         offLog();
       };

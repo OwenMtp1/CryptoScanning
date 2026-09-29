@@ -1,117 +1,251 @@
 "use client";
 
-import { RadarTable } from "@/components/RadarTable";
-import { Card, SignalChips, Stat } from "@/components/ui";
-import { fmtAge, fmtDuration, fmtMoney, fmtTime } from "@/lib/format";
+import type { Direction, IntelKind, IntelSource, NewsItem } from "@radar/core";
+import { useEffect, useMemo, useState } from "react";
+import { CoinLink, NewsList, SignalCard, SourceBadge } from "@/components/Intel";
+import { Card, Stat } from "@/components/ui";
+import { getJson } from "@/lib/api";
+import { fmtPct } from "@/lib/format";
+import { ALL_SOURCES, KIND_LABEL, SOURCE_LABEL, fmtAgo, type FeedResponse, type FeedSignal, type SourcesResponse, type UniverseResponse } from "@/lib/intel";
 import { useRadarStream } from "@/lib/stream";
 
-const EVENT_CHIP: Record<string, { label: string; cls: string }> = {
-  OPPORTUNITY_DETECTED: { label: "🚨 OPPORTUNITÉ", cls: "bg-emerald-500/15 text-emerald-300" },
-  POSITION_OPENED: { label: "⚡ OUVERTE", cls: "bg-sky-500/15 text-sky-300" },
-  POSITION_CLOSED: { label: "💰 FERMÉE", cls: "bg-slate-600/40 text-slate-100" },
-  STOP_TRIGGERED: { label: "🛑 STOP", cls: "bg-amber-500/20 text-amber-300" },
-  ORDER_REJECTED: { label: "REFUSÉ", cls: "bg-rose-500/15 text-rose-300" },
-  BOT_STOPPED: { label: "🛑 BOT ARRÊTÉ", cls: "bg-rose-600/30 text-rose-200" },
-  BOT_PAUSED: { label: "🔴 LIMITE", cls: "bg-orange-500/20 text-orange-200" },
-};
+type DirFilter = "all" | Direction;
 
-export default function RadarPage() {
-  const { snapshot, status, events, state, trading } = useRadarStream();
-  const recentSignals = events
-    .filter((e) => ["SIGNAL_DETECTED", "OPPORTUNITY_DETECTED", "POSITION_OPENED", "POSITION_CLOSED", "STOP_TRIGGERED", "ORDER_REJECTED", "BOT_STOPPED", "BOT_PAUSED"].includes(e.type))
-    .slice(0, 14);
+export default function FluxPage() {
+  const { intel, state } = useRadarStream();
+  const [base, setBase] = useState<FeedResponse | null>(null);
+  const [news, setNews] = useState<NewsItem[]>([]);
+  const [sources, setSources] = useState<SourcesResponse | null>(null);
+  const [movers, setMovers] = useState<{ up: UniverseResponse | null; down: UniverseResponse | null }>({ up: null, down: null });
+  const [error, setError] = useState<string | null>(null);
+  const [dir, setDir] = useState<DirFilter>("all");
+  const [minStrength, setMinStrength] = useState(0);
+  const [srcOff, setSrcOff] = useState<Set<IntelSource>>(new Set());
+  const [kind, setKind] = useState<"" | IntelKind>("");
+  const [coin, setCoin] = useState("");
+  const [paused, setPaused] = useState(false);
+  const [frozen, setFrozen] = useState<FeedSignal[] | null>(null);
 
-  if (state !== "open" && !snapshot) {
+  useEffect(() => {
+    const load = () => {
+      getJson<FeedResponse>("/api/intel/feed?limit=1000").then(
+        (r) => {
+          setBase(r);
+          setError(null);
+        },
+        (e: Error) => setError(e.message),
+      );
+      getJson<NewsItem[]>("/api/intel/news?limit=150").then(setNews, () => {});
+      getJson<SourcesResponse>("/api/intel/sources").then(setSources, () => {});
+      getJson<UniverseResponse>("/api/intel/universe?sort=change1h&dir=desc&limit=8").then((up) => setMovers((m) => ({ ...m, up })), () => {});
+      getJson<UniverseResponse>("/api/intel/universe?sort=change1h&dir=asc&limit=8").then((down) => setMovers((m) => ({ ...m, down })), () => {});
+    };
+    load();
+    const t = setInterval(load, 30_000);
+    return () => clearInterval(t);
+  }, []);
+
+  // Merge the live stream (newest first) with the last full load, de-duplicated.
+  const all = useMemo(() => {
+    const seen = new Set<string>();
+    const out: FeedSignal[] = [];
+    for (const s of [...intel.signals, ...(base?.signals ?? [])]) {
+      if (seen.has(s.id)) continue;
+      seen.add(s.id);
+      out.push(s);
+    }
+    return out.sort((a, b) => b.ts - a.ts);
+  }, [intel.rev, base]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const allNews = useMemo(() => {
+    const seen = new Set<string>();
+    return [...intel.news, ...news].filter((n) => (seen.has(n.id) ? false : (seen.add(n.id), true))).sort((a, b) => b.ts - a.ts);
+  }, [intel.rev, news]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const list = paused && frozen ? frozen : all;
+  const q = coin.trim().toUpperCase();
+  const filtered = list.filter(
+    (s) => (dir === "all" || s.direction === dir) && s.strength >= minStrength && !srcOff.has(s.source) && (!kind || s.kind === kind) && (!q || s.coin.includes(q)),
+  );
+  const confluences = all.filter((s) => s.kind === "CONFLUENCE").slice(0, 8);
+  const hourAgo = Date.now() - 3_600_000;
+  const lastHour = all.filter((s) => s.ts >= hourAgo);
+  const okSources = sources?.sources.filter((s) => s.enabled && s.state === "ok").length ?? 0;
+  const enabledSources = sources?.sources.filter((s) => s.enabled).length ?? 0;
+  const kindsPresent = [...new Set(all.map((s) => s.kind))].sort();
+
+  if (error && !base)
     return (
       <Card>
-        <p className="text-slate-300">Connexion à l&apos;API locale…</p>
+        <p className="text-slate-300">Flux d&apos;informations indisponible : {error}</p>
         <p className="mt-1 text-sm text-slate-500">
-          Vérifie que le serveur tourne : <code className="text-slate-300">pnpm dev:server</code> (port 4000).
+          Vérifie que le serveur tourne (<code>pnpm dev:server</code>) et que <code>INTEL_ENABLED</code> n&apos;est pas à <code>false</code>.
         </p>
       </Card>
     );
-  }
-
-  const h = snapshot?.health ?? status?.health;
-  const feed = status?.feed;
 
   return (
-    <div className="space-y-6">
-      <div className="grid grid-cols-2 gap-4 md:grid-cols-4 xl:grid-cols-7">
-        <Card className="col-span-2 md:col-span-4 xl:col-span-2">
-          <div className="flex items-center gap-2">
-            <span className={`inline-block h-2.5 w-2.5 rounded-full ${trading?.executionEnabled ? "bg-emerald-400" : "bg-sky-400"}`} />
-            <span className={`whitespace-nowrap font-semibold ${trading?.executionEnabled ? "text-emerald-300" : "text-sky-300"}`}>
-              {trading?.executionEnabled ? "PAPER MODE" : "MODE RADAR"}
-            </span>
-            <span className="text-xs text-slate-500">{trading?.executionEnabled ? "trading simulé — aucun ordre réel" : "observation — portefeuille virtuel, aucune exécution"}</span>
-          </div>
-          <div className="mt-3 grid grid-cols-3 gap-3">
-            <Stat
-              label="Capital"
-              value={trading?.initialized ? fmtMoney(trading.capital.total, trading.capital.currency) : "—"}
-              hint={trading?.initialized ? `tradable ${fmtMoney(trading.capital.tradable, trading.capital.currency)}` : trading?.waitingFor.length ? `attente prix ${trading.waitingFor.join(", ")}` : undefined}
-            />
-            <Stat
-              label="P&L trading"
-              value={trading ? fmtMoney(trading.performance.tradingPnl, trading.capital.currency, true) : "—"}
-              tone={!trading || Math.abs(trading.performance.tradingPnl) < 0.005 ? "default" : trading.performance.tradingPnl > 0 ? "good" : "bad"}
-              hint={trading ? `${trading.performance.trades} trade(s) clôturé(s)` : undefined}
-            />
-            <Stat label="Positions" value={trading ? `${trading.positions.length}/${trading.limits.maxOpenPositions}` : "—"} hint="ouvertes / max" />
-          </div>
+    <div className="space-y-4">
+      {sources?.simulated && (
+        <div className="rounded border border-amber-600/50 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+          <strong>DÉMO — SOURCES SIMULÉES.</strong> Les cryptos, prix, signaux et titres d&apos;actualité ci-dessous sont générés dans ton navigateur pour montrer le fonctionnement. Rien n&apos;est réel. En local, le serveur
+          se branche sur Binance, CoinGecko, GeckoTerminal et les flux RSS.
+        </div>
+      )}
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+        <Card>
+          <Stat label="Signaux (1 h)" value={lastHour.length} hint={`${all.length} en mémoire`} />
         </Card>
         <Card>
-          <Stat label="Actifs suivis" value={status?.products ?? "—"} hint={feed ? `${feed.openConnections}/${feed.connections} connexion(s)` : undefined} />
+          <Stat label="Haussiers (1 h)" value={lastHour.filter((s) => s.direction === "bullish").length} tone="good" />
         </Card>
         <Card>
-          <Stat label="Opportunités" value={snapshot?.opportunities ?? 0} tone={(snapshot?.opportunities ?? 0) > 0 ? "good" : "default"} hint="actives" />
+          <Stat label="Baissiers (1 h)" value={lastHour.filter((s) => s.direction === "bearish").length} tone="bad" />
         </Card>
         <Card>
-          <Stat label="Signaux (5 min)" value={snapshot?.signalsLast5m ?? 0} />
+          <Stat label="Confluences (1 h)" value={lastHour.filter((s) => s.kind === "CONFLUENCE").length} tone="warn" hint="≥ 2 types d'indices d'accord" />
         </Card>
         <Card>
-          <Stat
-            label="Données"
-            value={h?.healthy ? "Fraîches" : "Obsolètes"}
-            tone={h?.healthy ? "good" : "bad"}
-            hint={h?.healthy ? `dernier message ${fmtAge(h.lastMessageAgeMs)}` : (h?.reason ?? undefined)}
-          />
+          <Stat label="Cryptos suivies" value={base?.counts.universe ?? "—"} hint="toutes sources" />
         </Card>
         <Card>
-          <Stat
-            label="Risque"
-            value={trading?.riskLevel ?? "—"}
-            tone={trading?.riskLevel === "LOW" ? "good" : trading?.riskLevel === "MEDIUM" ? "warn" : trading ? "bad" : "muted"}
-            hint={trading ? `perte 24 h ${fmtMoney(trading.limits.lossUsed24h, trading.capital.currency)} / ${trading.limits.maxDailyLoss}` : status ? `uptime ${fmtDuration(Date.now() - status.startedAt)}` : undefined}
-          />
+          <Stat label="Sources OK" value={`${okSources}/${enabledSources}`} tone={okSources === enabledSources && enabledSources > 0 ? "good" : "warn"} hint={state === "open" ? "flux en direct" : "reconnexion…"} />
         </Card>
       </div>
 
-      <div className="grid gap-6 xl:grid-cols-[1fr_340px]">
-        <Card title="Live market radar" className="min-w-0">
-          <RadarTable rows={snapshot?.rows ?? []} />
-        </Card>
-        <Card title="Derniers événements" className="min-w-0">
-          <ul className="space-y-2 text-xs">
-            {recentSignals.length === 0 && <li className="text-slate-500">Aucun signal pour l&apos;instant.</li>}
-            {recentSignals.map((e) => (
-              <li key={e.id} className="border-b border-slate-800 pb-2">
-                <div className="flex items-center gap-2">
-                  <span className="num text-slate-500">{fmtTime(e.ts)}</span>
-                  <span className="font-semibold text-slate-200">{e.productId}</span>
-                  {e.type === "SIGNAL_DETECTED" ? (
-                    <SignalChips types={[(e.data as { signalType: never }).signalType]} />
-                  ) : (
-                    <span className={`rounded px-1.5 text-[10px] font-bold ${EVENT_CHIP[e.type]?.cls ?? "bg-slate-700 text-slate-200"}`}>{EVENT_CHIP[e.type]?.label ?? e.type}</span>
-                  )}
-                </div>
-                <div className="mt-0.5 break-words text-slate-400">{e.message.replace(`${e.productId} : `, "")}</div>
-              </li>
+      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_380px]">
+        <div className="min-w-0 space-y-3">
+          <Card>
+            <div className="flex flex-wrap items-center gap-2 text-xs">
+              {(["all", "bullish", "bearish", "neutral"] as const).map((d) => (
+                <button
+                  key={d}
+                  onClick={() => setDir(d)}
+                  className={`rounded px-2.5 py-1 font-semibold ${dir === d ? (d === "bullish" ? "bg-emerald-600 text-white" : d === "bearish" ? "bg-rose-600 text-white" : "bg-slate-700 text-white") : "bg-slate-800 text-slate-400 hover:text-slate-200"}`}
+                >
+                  {{ all: "Tout", bullish: "▲ Va exploser ?", bearish: "▼ Va chuter ?", neutral: "• Neutre" }[d]}
+                </button>
+              ))}
+              <label className="ml-2 flex items-center gap-2 text-slate-400">
+                Force ≥ <input type="range" min={0} max={95} step={5} value={minStrength} onChange={(e) => setMinStrength(Number(e.target.value))} />
+                <span className="num w-6 text-slate-200">{minStrength}</span>
+              </label>
+              <select value={kind} onChange={(e) => setKind(e.target.value as IntelKind | "")} className="rounded border border-slate-700 bg-slate-900 px-2 py-1">
+                <option value="">Tous les types</option>
+                {kindsPresent.map((k) => (
+                  <option key={k} value={k}>
+                    {KIND_LABEL[k]}
+                  </option>
+                ))}
+              </select>
+              <input value={coin} onChange={(e) => setCoin(e.target.value)} placeholder="Crypto (ex. PEPE)" className="w-32 rounded border border-slate-700 bg-slate-900 px-2 py-1" />
+              <button
+                onClick={() => {
+                  setFrozen(paused ? null : all);
+                  setPaused(!paused);
+                }}
+                className={`ml-auto rounded px-2.5 py-1 font-semibold ${paused ? "bg-amber-500 text-black" : "bg-slate-800 text-slate-300"}`}
+                title="Figer la liste pour lire tranquillement"
+              >
+                {paused ? "▶ Reprendre le direct" : "⏸ Pause"}
+              </button>
+            </div>
+            <div className="mt-2 flex flex-wrap gap-1.5 text-xs">
+              {ALL_SOURCES.map((s) => {
+                const off = srcOff.has(s);
+                const n = all.filter((x) => x.source === s).length;
+                return (
+                  <button
+                    key={s}
+                    onClick={() => {
+                      const next = new Set(srcOff);
+                      if (off) next.delete(s);
+                      else next.add(s);
+                      setSrcOff(next);
+                    }}
+                    className={`rounded border px-2 py-0.5 ${off ? "border-slate-800 text-slate-600 line-through" : "border-slate-700 text-slate-300"}`}
+                  >
+                    {SOURCE_LABEL[s]} <span className="num text-slate-500">{n}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </Card>
+          <div className="space-y-2">
+            {filtered.slice(0, 300).map((s) => (
+              <SignalCard key={s.id} s={s} />
             ))}
-          </ul>
-        </Card>
+            {!filtered.length && (
+              <Card>
+                <p className="text-sm text-slate-500">
+                  {all.length ? "Aucun signal ne correspond aux filtres." : "Aucun signal pour l'instant : les sources démarrent (Binance en quelques secondes, CoinGecko et les actus en quelques minutes)."}
+                </p>
+              </Card>
+            )}
+            {filtered.length > 300 && <p className="text-center text-xs text-slate-500">300 premiers affichés sur {filtered.length} — affine les filtres.</p>}
+          </div>
+        </div>
+
+        <div className="min-w-0 space-y-4">
+          <Card title="Confluences récentes">
+            {!confluences.length && <p className="text-sm text-slate-500">Aucune pour l&apos;instant (il faut au moins deux types d'indices indépendants — prix, attention, actualités, dérivés — dans le même sens).</p>}
+            <ul className="space-y-1.5">
+              {confluences.map((s) => (
+                <li key={s.id} className="flex items-center gap-2 text-sm">
+                  <span className={s.direction === "bullish" ? "text-emerald-400" : "text-rose-400"}>{s.direction === "bullish" ? "▲" : "▼"}</span>
+                  <CoinLink symbol={s.coin} />
+                  <span className="truncate text-xs text-slate-400">{String(s.metrics.sources ?? "")}</span>
+                  <span className="num ml-auto text-xs text-slate-500">{s.strength} · {fmtAgo(s.ts)}</span>
+                </li>
+              ))}
+            </ul>
+          </Card>
+          <Card title="Plus fortes hausses 1 h">
+            <MoverList data={movers.up} />
+          </Card>
+          <Card title="Plus fortes baisses 1 h">
+            <MoverList data={movers.down} />
+          </Card>
+          <Card title={`Actualités (${allNews.length})`}>
+            <NewsList items={allNews} max={60} />
+          </Card>
+          {sources && (
+            <Card title="État des sources">
+              <ul className="space-y-1 text-xs">
+                {sources.sources.map((s) => (
+                  <li key={s.source} className="flex items-center gap-2">
+                    <span className={`h-2 w-2 rounded-full ${!s.enabled ? "bg-slate-700" : s.state === "ok" ? "bg-emerald-400" : s.state === "waiting" ? "bg-sky-400" : "bg-amber-400"}`} />
+                    {s.source === "discord" ? <span className="font-bold text-slate-300">DISCORD</span> : <SourceBadge source={s.source} />}
+                    <span className="truncate text-slate-500" title={s.lastError ?? s.note ?? ""}>
+                      {!s.enabled ? "désactivée" : s.lastError ?? s.note}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </Card>
+          )}
+        </div>
       </div>
     </div>
+  );
+}
+
+function MoverList({ data }: { data: UniverseResponse | null }) {
+  if (!data) return <p className="text-sm text-slate-500">…</p>;
+  const rows = data.rows.filter((r) => (r.live?.change1h ?? r.change1h) !== null);
+  if (!rows.length) return <p className="text-sm text-slate-500">Pas encore de données.</p>;
+  return (
+    <ul className="num space-y-1 text-sm">
+      {rows.map((r) => {
+        const ch = r.live?.change1h ?? r.change1h;
+        return (
+          <li key={r.symbol} className="flex items-center gap-2">
+            <CoinLink symbol={r.symbol} />
+            <span className="truncate text-xs text-slate-500">{r.name !== r.symbol ? r.name : ""}</span>
+            <span className={`ml-auto font-semibold ${ch !== null && ch > 0 ? "text-emerald-400" : "text-rose-400"}`}>{fmtPct(ch)}</span>
+          </li>
+        );
+      })}
+    </ul>
   );
 }

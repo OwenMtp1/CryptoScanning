@@ -2,11 +2,16 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { demoBackend } from "@/lib/api";
 import { useRadarStream } from "@/lib/stream";
 import { BlockedBanner, EmergencyStopButton } from "./SafetyControls";
 
 const NAV = [
-  { href: "/", label: "Radar" },
+  { href: "/", label: "Flux" },
+  { href: "/univers", label: "Univers" },
+  { href: "/performance", label: "Performance" },
+  { href: "/sources", label: "Sources" },
+  { href: "/radar", label: "Radar Coinbase" },
   { href: "/opportunities", label: "Opportunités" },
   { href: "/positions", label: "Positions" },
   { href: "/portfolio", label: "Portefeuille" },
@@ -26,7 +31,9 @@ export function Header() {
     <header className="sticky top-0 z-20 border-b border-slate-800 bg-[#070b14]/95 backdrop-blur">
       {simulated && (
         <div className="bg-amber-500/15 py-1 text-center text-xs font-semibold tracking-wide text-amber-300">
-          DONNÉES SIMULÉES — prix et volumes fictifs, aucune connexion à Coinbase
+          {demoBackend()
+            ? "DÉMO — TOUTES LES DONNÉES SONT SIMULÉES (prix, signaux, actualités), aucune connexion externe"
+            : "Radar Coinbase et trading paper en DONNÉES SIMULÉES (DATA_SOURCE=simulated) — le Flux multi-sources utilise les données réelles"}
         </div>
       )}
       <BlockedBanner />
@@ -56,7 +63,7 @@ export function Header() {
           {state !== "open"
             ? "API locale injoignable"
             : healthy
-              ? `Flux ${status?.feed.source === "simulated" ? "simulé" : "Coinbase"} OK`
+              ? `Coinbase ${status?.feed.source === "simulated" ? "simulé" : "temps réel"} OK`
               : `Flux dégradé : ${status?.health.reason ?? "…"}`}
           <EmergencyStopButton />
         </div>
