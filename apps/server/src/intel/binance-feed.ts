@@ -23,6 +23,8 @@ export interface BinanceFeedOptions {
   /** Called every tickMs with the coins updated since the last call. */
   onTick(tracker: LiveTracker, changed: Set<string>, now: number): void;
   onState(state: "connecting" | "ok" | "down", message: string | null, now: number): void;
+  /** When exchangeInfo cannot be loaded, discover pairs from the stream instead of retrying. */
+  discoverOnFailure?: boolean;
   tickMs?: number;
   watchdogMs?: number;
   rotateMs?: number;
@@ -75,7 +77,7 @@ export class BinanceFeed {
     for (;;) {
       try {
         const res = await this.o.fetchText(`${this.o.restUrl}/api/v3/exchangeInfo?permissions=SPOT`, { timeoutMs: 20_000 });
-        if (res.status !== 200) throw new Error(`exchangeInfo HTTP ${res.status}`);
+        if (res.status !== 200) throw new Error(`exchangeInfo HTTP ${res.status}${res.headers.get("x-upstream-status") ? ` (Binance a répondu ${res.headers.get("x-upstream-status")})` : ""}`);
         const info = BinanceExchangeInfoSchema.parse(JSON.parse(res.text));
         const map = new Map<string, { base: string; quote: string }>();
         for (const s of info.symbols) if (s.status === "TRADING" && s.isSpotTradingAllowed !== false && this.o.quotes.includes(s.quoteAsset)) map.set(s.symbol, { base: s.baseAsset, quote: s.quoteAsset });
@@ -83,6 +85,12 @@ export class BinanceFeed {
         this.pairs = this.tracker.coins().length;
         return;
       } catch (err) {
+        if (this.o.discoverOnFailure) {
+          // Pair list unavailable: learn the pairs from the stream itself.
+          this.tracker = new LiveTracker(new Map(), this.o.quotes, true);
+          this.o.onState("connecting", `liste des paires indisponible (${(err as Error).message}) : découverte des paires via le flux temps réel`, this.now());
+          return;
+        }
         this.o.onState("down", `liste des paires Binance indisponible : ${(err as Error).message}`, this.now());
         if (this.stopped) return;
         await new Promise((r) => setTimeout(r, Math.min(300_000, 10_000 * 2 ** this.attempts++)));
@@ -114,7 +122,7 @@ export class BinanceFeed {
       this.connectedAt = this.now();
       this.lastMessageAt = this.connectedAt;
       this.attempts = 0;
-      this.o.onState("ok", `${this.pairs} cryptos suivies en temps réel`, this.now());
+      this.o.onState("ok", this.pairs ? `${this.pairs} cryptos suivies en temps réel` : "connecté — les paires sont découvertes au fil du flux", this.now());
     };
     ws.onmessage = (ev) => this.onMessage(typeof ev.data === "string" ? ev.data : String(ev.data));
     ws.onclose = (ev) => {
@@ -191,6 +199,6 @@ export class BinanceFeed {
   }
 
   status() {
-    return { pairs: this.pairs, messages: this.messages, decodeErrors: this.decodeErrors, connected: this.ws?.readyState === OPEN, lastMessageAt: this.lastMessageAt || null };
+    return { pairs: this.tracker?.coins().length ?? this.pairs, messages: this.messages, decodeErrors: this.decodeErrors, connected: this.ws?.readyState === OPEN, lastMessageAt: this.lastMessageAt || null };
   }
 }

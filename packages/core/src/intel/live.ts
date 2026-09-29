@@ -25,13 +25,16 @@ export class LiveTracker {
     /** pair symbol → { base, quote } from exchangeInfo */
     private readonly symbols: Map<string, { base: string; quote: string }>,
     private readonly quotes: string[],
+    /** Learn pairs from the stream itself when the pair list is unavailable (symbol = BASE + QUOTE). */
+    private readonly discover = false,
   ) {
     for (const q of quotes)
       for (const [pair, s] of symbols) if (s.quote === q && !this.coinPair.has(s.base)) this.coinPair.set(s.base, pair);
   }
 
   private state(pair: string, now: number): PairState | null {
-    if ([...this.coinPair.values()].indexOf(pair) === -1 && !this.pairs.has(pair)) {
+    if (!this.pairs.has(pair)) {
+      if (this.discover && !this.symbols.has(pair)) this.learn(pair);
       const s = this.symbols.get(pair);
       if (!s || this.coinPair.get(s.base) !== pair) return null;
     }
@@ -43,6 +46,17 @@ export class LiveTracker {
       this.pairs.set(pair, st);
     }
     return st;
+  }
+
+  private learn(pair: string) {
+    const quote = [...this.quotes].sort((a, b) => b.length - a.length).find((q) => pair.endsWith(q) && pair.length > q.length);
+    if (!quote) return;
+    const base = pair.slice(0, -quote.length);
+    this.symbols.set(pair, { base, quote });
+    const cur = this.coinPair.get(base);
+    const rank = (p: string | undefined) => (p ? this.quotes.indexOf((this.symbols.get(p) as { quote: string }).quote) : 99);
+    // Prefer the higher-priority quote, unless the current pair already has data.
+    if (!cur || (rank(pair) < rank(cur) && !this.pairs.has(cur))) this.coinPair.set(base, pair);
   }
 
   applyMini(t: BinanceMiniTicker, now: number): string | null {

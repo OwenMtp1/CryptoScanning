@@ -208,7 +208,8 @@ export class CoinGeckoFeed {
       }
       if (res.status === 401 || res.status === 403)
         throw new Error(this.o.apiKey ? `clé CoinGecko refusée (HTTP ${res.status}) — vérifier COINGECKO_API_KEY / COINGECKO_PLAN` : `accès refusé (HTTP ${res.status}) — une clé Demo gratuite (COINGECKO_API_KEY) est recommandée`);
-      if (res.status !== 200) throw new Error(`HTTP ${res.status}`);
+      const up = res.headers.get("x-upstream-status");
+      if (res.status !== 200) throw new Error(`HTTP ${res.status}${up ? ` (CoinGecko a répondu ${up}${up === "429" ? " : trop d'appels, ajoute une clé Demo" : up === "401" || up === "403" ? " : accès refusé, clé manquante ou invalide" : ""})` : ""}`);
       const n = t.run(res.text, now);
       this.o.handlers.onSuccess(t.id, n, now);
     } catch (err) {

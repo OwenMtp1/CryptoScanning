@@ -62,6 +62,7 @@ export async function startWeb(): Promise<DemoBackend> {
     wsUrl: BINANCE_WS,
     quotes: cfg.binance.quotes,
     fetchText: binanceFetch,
+    discoverOnFailure: true,
     onTick: (tracker, changed, now) => svc.onLive(tracker, changed, now),
     onState: (state, msg, now) => svc.setSourceState("binance", state === "connecting" ? "waiting" : state, msg, now),
   });

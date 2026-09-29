@@ -317,6 +317,14 @@ describe("LiveTracker", () => {
     expect(t.applyMini(mini("ETHBTC", T0, 1), T0)).toBeNull();
     expect(t.applyMini(mini("WIFUSDC", T0, 1), T0)).toBe("WIF");
   });
+  it("discovers pairs from the stream when the pair list is unavailable", () => {
+    const t = new LiveTracker(new Map(), ["USDT", "FDUSD"], true);
+    expect(t.applyMini(mini("PEPEUSDT", T0, 1), T0)).toBe("PEPE");
+    expect(t.applyMini(mini("PEPEFDUSD", T0, 1), T0)).toBeNull(); // lower-priority quote
+    expect(t.applyMini(mini("ETHBTC", T0, 1), T0)).toBeNull();
+    expect(t.coins()).toEqual(["PEPE"]);
+    expect(t.snapshot("PEPE", T0)!.pair).toBe("PEPEUSDT");
+  });
   it("computes 5/15-min changes only once enough history exists, and the 1 h volume ratio", () => {
     const t = new LiveTracker(symbols, ["USDT"]);
     t.applyMini(mini("PEPEUSDT", T0, 1), T0);
