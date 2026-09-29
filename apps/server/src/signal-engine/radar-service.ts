@@ -3,6 +3,7 @@ import type { LogFn } from "../market-data/source.js";
 import type { MarketDataEngine } from "../market-data/market-data-engine.js";
 
 type Listener = (s: RadarSnapshot) => void;
+type EvalListener = (e: { signals: Signal[]; opened: Opportunity[] }) => void;
 
 const MAX_SIGNALS = 1000;
 const MAX_EXPIRED = 200;
@@ -18,6 +19,7 @@ export class RadarService {
   private readonly signals: Signal[] = [];
   private readonly expired: Opportunity[] = [];
   private readonly listeners = new Set<Listener>();
+  private readonly evalListeners = new Set<EvalListener>();
 
   constructor(
     private readonly market: MarketDataEngine,
@@ -93,6 +95,14 @@ export class RadarService {
       signalsLast5m,
     };
     this.latest = snap;
+    if (r.newSignals.length || r.opened.length)
+      for (const l of this.evalListeners) {
+        try {
+          l({ signals: r.newSignals, opened: r.opened });
+        } catch {
+          // ignore listener failures
+        }
+      }
     for (const l of this.listeners) {
       try {
         l(snap);
@@ -116,6 +126,12 @@ export class RadarService {
       active: this.engine.activeOpportunities().sort((a, b) => b.score - a.score),
       recent: this.expired.slice(-50).reverse(),
     };
+  }
+
+  /** New signals and opportunities of each evaluation (used by the intel layer). */
+  subscribeEvaluations(l: EvalListener): () => void {
+    this.evalListeners.add(l);
+    return () => this.evalListeners.delete(l);
   }
 
   subscribe(l: Listener): () => void {

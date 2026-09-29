@@ -47,6 +47,12 @@ export const EVENT_TYPES = [
   "BOT_RESUMED",
   "PAPER_INITIALIZED",
   "PAPER_RESET",
+  // Intelligence (multi-source signals)
+  "INTEL_SIGNAL",
+  "INTEL_SOURCE_STATE",
+  "INTEL_BUDGET",
+  "DISCORD_SENT",
+  "DISCORD_ERROR",
 ] as const;
 export type EventType = (typeof EVENT_TYPES)[number];
 

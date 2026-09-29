@@ -112,7 +112,7 @@ async function handlePost(ctx: ApiContext, req: IncomingMessage, res: ServerResp
   } catch (err) {
     return send(res, 400, { error: (err as Error).message }, headers);
   }
-  const r = handleAction(ctx, pathname, body);
+  const r = await handleAction(ctx, pathname, body);
   return send(res, r.status, r.body, headers);
 }
 
@@ -135,12 +135,14 @@ function stream(ctx: ApiContext, req: IncomingMessage, res: ServerResponse, head
     write("status", statusOf(ctx));
     write("trading", ctx.trading.view());
   });
+  const offIntel = ctx.intel?.subscribe((b) => write("intel", b)) ?? (() => {});
   const offLog = ctx.log.subscribe((e) => {
     if (e.level !== "debug") write("log", e);
   });
   const keepAlive = setInterval(() => res.write(": keep-alive\n\n"), 15_000);
   req.on("close", () => {
     offRadar();
+    offIntel();
     offLog();
     clearInterval(keepAlive);
   });

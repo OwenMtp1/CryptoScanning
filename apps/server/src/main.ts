@@ -1,5 +1,14 @@
 import { createApiServer } from "./api/http-server.js";
-import { loadEnv, loadSignalConfig, loadTradingConfig } from "./config/env.js";
+import path from "node:path";
+import { loadEnv, loadIntelConfig, loadSignalConfig, loadTradingConfig } from "./config/env.js";
+import { BinanceFeed } from "./intel/binance-feed.js";
+import { CallBudget, type BudgetState } from "./intel/budget.js";
+import { CoinGeckoFeed } from "./intel/coingecko-feed.js";
+import { DiscordNotifier } from "./intel/discord-notifier.js";
+import { JsonFileStore } from "./intel/file-store.js";
+import { fetchText } from "./intel/http.js";
+import { IntelService, type IntelSavedState } from "./intel/intel-service.js";
+import { NewsPoller } from "./intel/news-poller.js";
 import { EventLog } from "./logging/event-log.js";
 import { CoinbaseMarketSource } from "./market-data/coinbase-source.js";
 import { MarketDataEngine } from "./market-data/market-data-engine.js";
@@ -95,12 +104,112 @@ async function main() {
   radar.subscribe((snap) => trading.onSnapshot(snap));
   const startedAt = Date.now();
 
+  // ─── Intelligence layer: all cryptos, many sources, Discord alerts ────────
+  const intelStops: (() => void)[] = [];
+  let intel: IntelService | undefined;
+  let intelExtras: (() => Record<string, unknown>) | undefined;
+  let startIntel = () => {};
+  let saveIntel = () => {};
+  let onProducts: (bases: string[]) => void = () => {};
+  if (env.INTEL_ENABLED) {
+    const { config: ic, source: icSource } = loadIntelConfig(env.intelConfigPath);
+    log.emit({ type: "CONFIG_LOADED", level: "info", message: `Configuration intel : ${icSource === "file" ? env.intelConfigPath : "valeurs par défaut"}`, data: { intelConfig: ic } });
+    const store = new JsonFileStore(path.join(env.intelDataDir, "state.json"));
+    const saved = store.load() as IntelSavedState | null;
+    const extras = (saved?.extras ?? {}) as { budget?: BudgetState; cgLastRun?: Record<string, number> };
+    let ref: IntelService | null = null;
+    const notifier = new DiscordNotifier({ webhookUrl: env.DISCORD_WEBHOOK_URL, cfg: ic.discord, fetchText, log: emit, hitRateOf: (s) => ref?.hitRateOf(s) ?? null });
+    const coinbaseLive = env.DATA_SOURCE === "coinbase";
+    const enabledSources = [
+      ...(ic.binance.enabled ? (["binance"] as const) : []),
+      ...(coinbaseLive ? (["coinbase"] as const) : []),
+      ...(ic.coingecko.enabled ? (["coingecko", "trending", "derivatives"] as const) : []),
+      ...(ic.coingecko.enabled && ic.coingecko.dex.enabled ? (["dex"] as const) : []),
+      ...(ic.news.enabled ? (["news"] as const) : []),
+      ...(notifier.active ? (["discord"] as const) : []),
+    ];
+    const svc = new IntelService({ cfg: ic, log: emit, notifier, enabledSources });
+    ref = svc;
+    intel = svc;
+    svc.restore(saved);
+    if (!notifier.active) svc.setSourceState("discord", "disabled", env.DISCORD_WEBHOOK_URL ? "URL de webhook invalide" : "DISCORD_WEBHOOK_URL non configurée");
+
+    const budget = new CallBudget(ic.coingecko.monthlyCallBudget, ic.coingecko.maxCallsPerMinute, extras.budget ?? null, Date.now());
+    const cg = ic.coingecko.enabled
+      ? new CoinGeckoFeed({
+          plan: env.coingeckoPlan,
+          apiKey: env.COINGECKO_API_KEY,
+          cfg: ic.coingecko,
+          budget,
+          fetchText,
+          lastRun: extras.cgLastRun,
+          handlers: {
+            onMarkets: (rows, page, now) => svc.onMarkets(rows, page, now),
+            onTrending: (list, now) => svc.onTrending(list, now),
+            onDerivatives: (rows, now) => svc.onDerivatives(rows, now),
+            onPools: (doc, isNew, now) => svc.onPools(doc, isNew, now),
+            onSuccess: (task, n, now) => svc.onCoinGeckoResult(task, true, null, n, now),
+            onError: (task, msg, now) => svc.onCoinGeckoResult(task, false, msg, 0, now),
+          },
+        })
+      : null;
+    const binance = ic.binance.enabled
+      ? new BinanceFeed({
+          restUrl: env.BINANCE_REST_URL,
+          wsUrl: env.BINANCE_WS_URL,
+          quotes: ic.binance.quotes,
+          fetchText,
+          onTick: (tracker, changed, now) => svc.onLive(tracker, changed, now),
+          onState: (state, msg, now) => svc.setSourceState("binance", state === "connecting" ? "waiting" : state, msg, now),
+        })
+      : null;
+    const news = ic.news.enabled
+      ? new NewsPoller({
+          feeds: ic.news.feeds,
+          intervalSec: ic.news.intervalSec,
+          fetchText,
+          onItems: (feed, items, now) => svc.onNews(feed.name, items, now),
+          onError: (feed, msg, now) => svc.setSourceState("news", "degraded", `${feed.name} : ${msg}`, now),
+        })
+      : null;
+    if (coinbaseLive) radar.subscribeEvaluations((e) => svc.onCoinbaseEvaluation(e));
+    onProducts = (bases) => {
+      if (coinbaseLive) svc.markCoinbase(bases);
+    };
+    saveIntel = () => {
+      try {
+        store.save(svc.exportState({ budget: budget.export(), cgLastRun: cg?.lastRuns() ?? {} }));
+      } catch (err) {
+        emit({ type: "API_ERROR", level: "warn", success: false, message: `Sauvegarde intel impossible : ${(err as Error).message}` });
+      }
+    };
+    intelExtras = () => {
+      const now = Date.now();
+      return {
+        coingecko: cg ? { plan: env.coingeckoPlan, keyConfigured: env.COINGECKO_API_KEY !== null, budget: budget.view(now), stretch: cg.stretch(now), schedule: cg.schedule(now) } : null,
+        binanceFeed: binance?.status() ?? null,
+        newsFeeds: news?.feedsHealth() ?? [],
+      };
+    };
+    startIntel = () => {
+      cg?.start();
+      void binance?.start();
+      news?.start();
+      notifier.start();
+      const t1 = setInterval(() => svc.tickOutcomes(), 30_000);
+      const t2 = setInterval(saveIntel, 60_000);
+      intelStops.push(() => clearInterval(t1), () => clearInterval(t2), () => cg?.stop(), () => binance?.stop(), () => news?.stop(), () => notifier.stop());
+    };
+  }
+
   const server = createApiServer({
     log,
     market,
     radar,
     trading,
     account,
+    intel,
+    intelExtras,
     allowedOrigins: env.DASHBOARD_ORIGINS,
     startedAt,
     publicConfig: () => ({
@@ -127,6 +236,8 @@ async function main() {
       },
     }),
   });
+  // Intel sources do not depend on Coinbase products: start them right away.
+  startIntel();
   server.listen(env.PORT, env.HOST, () => {
     log.emit({
       type: "SYSTEM_STARTED",
@@ -142,6 +253,7 @@ async function main() {
   const boot = async () => {
     try {
       await market.loadProducts();
+      onProducts(market.getProducts().map((p) => p.baseCurrency));
       market.start();
       radar.start();
       void account.start();
@@ -163,6 +275,8 @@ async function main() {
     radar.stop();
     market.stop();
     account.stop();
+    for (const stop of intelStops) stop();
+    saveIntel();
     server.closeAllConnections();
     server.close();
     await log.close();

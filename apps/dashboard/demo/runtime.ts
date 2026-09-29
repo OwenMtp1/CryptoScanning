@@ -156,7 +156,7 @@ export async function startDemo(): Promise<{ backend: DemoBackend; info: DemoInf
       return structuredClone(r.body);
     },
     async post(path, body) {
-      const r = handleAction(ctx, new URL(path, "https://demo.local").pathname, structuredClone(body));
+      const r = await handleAction(ctx, new URL(path, "https://demo.local").pathname, structuredClone(body));
       persist();
       return { status: r.status, body: structuredClone(r.body) };
     },

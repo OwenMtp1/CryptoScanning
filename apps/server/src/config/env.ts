@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
-import { SignalConfigSchema, TradingConfigSchema, type SignalConfig, type TradingConfig } from "@radar/core";
+import { IntelConfigSchema, SignalConfigSchema, TradingConfigSchema, type IntelConfig, type SignalConfig, type TradingConfig } from "@radar/core";
 
 export const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../..");
 
@@ -38,6 +38,19 @@ export const EnvSchema = z.object({
   PAPER_DATA_DIR: z.string().default("data/paper"),
   /** Strategies saved by the Strategy Builder (data/strategies.json). */
   STRATEGIES_DIR: z.string().default("data"),
+  // ─── Intelligence layer (multi-source signals) ────────────────────────────
+  INTEL_ENABLED: z.enum(["true", "false"]).default("true").transform((v) => v === "true"),
+  INTEL_CONFIG_FILE: z.string().default("config/intel.json"),
+  INTEL_DATA_DIR: z.string().default("data/intel"),
+  /** Binance market-data-only endpoints (public, no key). */
+  BINANCE_REST_URL: z.url().default("https://data-api.binance.vision"),
+  BINANCE_WS_URL: z.url().default("wss://data-stream.binance.vision"),
+  /** SECRET. CoinGecko API key (free "Demo" key recommended). Optional. */
+  COINGECKO_API_KEY: z.string().trim().optional().transform((v) => v || null),
+  /** demo = free key (api.coingecko.com), pro = paid key (pro-api.coingecko.com), public = no key. */
+  COINGECKO_PLAN: z.enum(["demo", "pro", "public"]).optional(),
+  /** SECRET. Discord incoming webhook URL (contains a token). Optional. */
+  DISCORD_WEBHOOK_URL: z.string().trim().optional().transform((v) => v || null),
   /** Comma-separated list of dashboard origins allowed by CORS. */
   DASHBOARD_ORIGINS: z
     .string()
@@ -45,7 +58,16 @@ export const EnvSchema = z.object({
     .default(["http://localhost:3000", "http://127.0.0.1:3000"]),
 });
 
-export type Env = z.infer<typeof EnvSchema> & { logDir: string; signalConfigPath: string; tradingConfigPath: string; paperDataDir: string; strategiesDir: string };
+export type Env = z.infer<typeof EnvSchema> & {
+  logDir: string;
+  signalConfigPath: string;
+  tradingConfigPath: string;
+  paperDataDir: string;
+  strategiesDir: string;
+  intelConfigPath: string;
+  intelDataDir: string;
+  coingeckoPlan: "demo" | "pro" | "public";
+};
 
 export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
   const env = EnvSchema.parse(source);
@@ -56,6 +78,9 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
     tradingConfigPath: path.resolve(REPO_ROOT, env.TRADING_CONFIG_FILE),
     paperDataDir: path.resolve(REPO_ROOT, env.PAPER_DATA_DIR),
     strategiesDir: path.resolve(REPO_ROOT, env.STRATEGIES_DIR),
+    intelConfigPath: path.resolve(REPO_ROOT, env.INTEL_CONFIG_FILE),
+    intelDataDir: path.resolve(REPO_ROOT, env.INTEL_DATA_DIR),
+    coingeckoPlan: env.COINGECKO_PLAN ?? (env.COINGECKO_API_KEY ? "demo" : "public"),
   };
 }
 
@@ -79,4 +104,15 @@ export function loadTradingConfig(file: string): { config: TradingConfig; source
     return { config: TradingConfigSchema.parse({}), source: "defaults" };
   }
   return { config: TradingConfigSchema.parse(JSON.parse(raw)), source: "file" };
+}
+
+/** Load the intel configuration file (optional). Invalid files are a hard error. */
+export function loadIntelConfig(file: string): { config: IntelConfig; source: "file" | "defaults" } {
+  let raw: string;
+  try {
+    raw = readFileSync(file, "utf8");
+  } catch {
+    return { config: IntelConfigSchema.parse({}), source: "defaults" };
+  }
+  return { config: IntelConfigSchema.parse(JSON.parse(raw)), source: "file" };
 }

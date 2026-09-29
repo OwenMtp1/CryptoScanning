@@ -3,15 +3,19 @@
  * dashboard. Keys are matched by name; values that look like PEM keys or
  * JWTs are masked wherever they appear.
  */
-const SENSITIVE_KEY = /(secret|private|passw|token|jwt|authorization|api[-_]?key|signature|credential|cookie)/i;
+const SENSITIVE_KEY = /(secret|private|passw|token|jwt|authorization|api[-_]?key|signature|credential|cookie|webhook)/i;
 const PEM = /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g;
 const JWT = /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g;
 const BEARER = /\bBearer\s+[A-Za-z0-9._~+/-]+=*/gi;
+/** Discord webhook URLs embed their token in the path. */
+const DISCORD_WEBHOOK = /(\/api\/webhooks\/\d+\/)[A-Za-z0-9._-]+/g;
+/** CoinGecko key passed as a query parameter. */
+const CG_KEY = /(x_cg_(?:demo|pro)_api_key=)[^&\s]+/gi;
 
 export const REDACTED = "[REDACTED]";
 
 export function redactString(s: string): string {
-  return s.replace(PEM, REDACTED).replace(JWT, REDACTED).replace(BEARER, `Bearer ${REDACTED}`);
+  return s.replace(PEM, REDACTED).replace(JWT, REDACTED).replace(BEARER, `Bearer ${REDACTED}`).replace(DISCORD_WEBHOOK, `$1${REDACTED}`).replace(CG_KEY, `$1${REDACTED}`);
 }
 
 export function redact<T>(value: T, depth = 0): T {
