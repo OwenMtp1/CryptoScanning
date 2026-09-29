@@ -1,8 +1,11 @@
 # 08 — Bot Discord 24 h/24 (Cloudflare Worker, gratuit)
 
-Le site en ligne n'analyse que lorsque la page est ouverte. Ce **worker** tourne en permanence chez Cloudflare :
-**toutes les 5 minutes**, il analyse le marché et envoie les alertes dans ton salon Discord, même quand ton ordinateur et
-ton téléphone sont éteints.
+Le site en ligne n'analyse que lorsque la page est ouverte. Ce **worker** tourne en permanence chez Cloudflare, même
+quand ton ordinateur et ton téléphone sont éteints :
+
+- **toutes les ~20 secondes** : prix de toutes les cryptos Coinbase, donc alertes décollage et chute presque en direct ;
+- **toutes les 5 minutes** : CoinGecko, tendances, dérivés, DEX et actualités ;
+- **instantanément**, quand ta page est ouverte : les signaux du site, dont Binance en temps réel (voir « Relais »).
 
 ## Ce qu'il surveille
 
@@ -62,6 +65,7 @@ Dans le worker `crypto-radar-discord` → **Settings** → **Variables and Secre
 | Text | `SITE_URL` | l'adresse de ton site, par ex. `https://crypto-radar.pages.dev` |
 | **Secret** (facultatif) | `DISCORD_WEBHOOK_BULLISH` | webhook d'un salon réservé aux signaux **haussiers** |
 | **Secret** (facultatif) | `DISCORD_WEBHOOK_BEARISH` | webhook d'un salon réservé aux signaux **baissiers** |
+| **Secret** (facultatif) | `RELAY_KEY` | un code que tu inventes (au moins 16 caractères) pour le relais site → Discord |
 | Text (facultatif) | `DISCORD_MIN_STRENGTH` | seuil d'alerte immédiate, `70` par défaut (monte à `80` si c'est trop bavard) |
 | Text (facultatif) | `DISCORD_ROLE_ID` | identifiant d'un rôle Discord à mentionner sur les signaux ≥ 90 |
 
@@ -80,6 +84,20 @@ Clique sur **Save / Deploy**.
 
 Chaque salon reçoit alors un message de bienvenue qui dit ce qu'il va recevoir, puis uniquement ses alertes.
 `DISCORD_WEBHOOK_URL` devient facultatif : s'il est rempli, il reçoit ce qui ne va dans aucun des deux salons.
+
+### Relais site → Discord (instantané) et état du bot sur le site
+
+1. **Sur le worker**, ajoute le secret `RELAY_KEY` : un code que tu inventes, par exemple 20 lettres et chiffres au hasard.
+2. **Sur le site** (le projet **Pages**), va dans Settings → Variables and Secrets et ajoute
+   `DISCORD_WORKER_URL` = l'adresse du bot (`https://crypto-radar-discord.<ton-compte>.workers.dev`). Redéploie ensuite
+   le site : Deployments → ⋯ → Retry.
+3. **Sur ton site**, page **Sources** → carte Discord : colle le code dans « code de relais » → **Activer**.
+
+Le code n'est gardé que dans ce navigateur. Sur chaque appareil où tu veux relayer, il faut l'entrer une fois.
+
+Tant que la page est ouverte, ses signaux partent vers Discord en quelques secondes. Ils passent par les mêmes règles
+que le bot : seuil, une alerte par heure et par crypto, salons haussier et baissier. Un même mouvement vu par le site et
+par le bot n'est donc envoyé qu'une fois. Sans le bon code, personne ne peut écrire dans ton Discord via le site.
 
 ## Problèmes fréquents
 

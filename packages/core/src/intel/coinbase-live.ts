@@ -15,7 +15,11 @@ export type CoinbaseHistoryState = Record<string, [number, number][]>;
 export class CoinbasePriceHistory {
   private readonly hist = new Map<string, [number, number][]>();
 
-  constructor(state: CoinbaseHistoryState | null = null) {
+  constructor(
+    state: CoinbaseHistoryState | null = null,
+    /** Minimum spacing between stored samples (keeps the state small with frequent polls). */
+    private readonly minSpacingMs = 50_000,
+  ) {
     for (const [k, v] of Object.entries(state ?? {})) if (Array.isArray(v)) this.hist.set(k, v.slice(-40));
   }
 
@@ -60,7 +64,8 @@ export class CoinbasePriceHistory {
         high24h: price,
         low24h: price,
       });
-      h.push([now, price]);
+      const last = h[h.length - 1];
+      if (!last || now - last[0] >= this.minSpacingMs) h.push([now, price]);
       while (h.length && (h[0] as [number, number])[0] < now - KEEP_MS) h.shift();
       this.hist.set(p.baseCurrency, h);
     }

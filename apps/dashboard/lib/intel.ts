@@ -51,6 +51,21 @@ export interface SourcesResponse {
   simulated?: boolean;
   /** Live website (browser runtime + Cloudflare functions). */
   web?: boolean;
+  discordWorker?: {
+    configured?: boolean;
+    error?: string;
+    status?: {
+      lastRunAt?: number | null;
+      loop?: string;
+      signals24h?: number;
+      errors?: string[];
+      relay?: { configured: boolean; received: number; lastAt: number | null };
+      config?: { siteUrl: string | null; webhookConfigured: boolean; minStrength: number };
+      discord?: Record<string, { directions: string[]; state: string; sentLastHour: number; lastSentAt: number | null; lastError: string | null }>;
+      message?: string;
+    };
+  } | null;
+  relay?: { keySet: boolean; sent: number; lastOkAt: number | null; lastError: string | null };
 }
 
 export const KIND_LABEL: Record<IntelKind, string> = {

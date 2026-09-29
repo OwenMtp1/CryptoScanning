@@ -86,7 +86,9 @@ export default function SourcesPage() {
 
       <div className="grid gap-4 lg:grid-cols-2">
         <Card title="Discord" className="min-w-0">
-          {!dc ? (
+          {d.web ? (
+            <WebDiscord d={d} />
+          ) : !dc ? (
             <p className="text-sm text-slate-500">{d.simulated ? "Démo : pas d'envoi Discord (possible uniquement avec le serveur local et ton webhook)." : d.web ? "Site web : pas d'alertes Discord (elles demandent un programme qui tourne 24 h/24, l'analyse s'arrête quand la page est fermée)." : "Non disponible."}</p>
           ) : (
             <>
@@ -225,6 +227,85 @@ function Row({ k, v }: { k: string; v: string }) {
     <div className="flex justify-between gap-3 border-b border-slate-800/60 py-1">
       <span className="text-slate-500">{k}</span>
       <span className="num text-right">{v}</span>
+    </div>
+  );
+}
+
+function WebDiscord({ d }: { d: SourcesResponse }) {
+  const { notify } = useDialogs();
+  const [key, setKey] = useState("");
+  const [busy, setBusy] = useState(false);
+  const w = d.discordWorker;
+  const st = w?.status;
+  const now = Date.now();
+  const save = async (value: string) => {
+    setBusy(true);
+    try {
+      const r = await postAction<{ message: string }>("/api/web/relay-key", { key: value });
+      notify(r.message, "info");
+      setKey("");
+    } catch (e) {
+      notify(`Refusé : ${(e as Error).message}`, "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="space-y-3 text-sm">
+      {!w?.configured ? (
+        <p className="text-slate-400">
+          Pour voir l&apos;état du bot ici : dans Cloudflare, projet <strong>Pages</strong> du site → Settings → Variables and Secrets → <code>DISCORD_WORKER_URL</code> = l&apos;adresse de ton bot (…<code>.workers.dev</code>), puis redéploie.
+        </p>
+      ) : w.error ? (
+        <p className="text-amber-300">{w.error}</p>
+      ) : (
+        <>
+          <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
+            <Stat label="Dernière analyse" value={st?.lastRunAt ? `il y a ${fmtAgo(st.lastRunAt, now)}` : "—"} tone={st?.lastRunAt && now - st.lastRunAt < 180_000 ? "good" : "warn"} />
+            <Stat label="Alertes (24 h)" value={st?.signals24h ?? "—"} />
+            <Stat label="Seuil" value={st?.config ? `force ≥ ${st.config.minStrength}` : "—"} />
+          </div>
+          <ul className="space-y-1 text-xs">
+            {Object.entries(st?.discord ?? {}).map(([name, c]) => (
+              <li key={name} className="flex flex-wrap gap-2">
+                <span className="font-semibold text-slate-200">Salon {name}</span>
+                <span className="text-slate-500">{c.directions.join(" + ")}</span>
+                <span className="text-slate-400">· {c.sentLastHour} message(s) sur 1 h</span>
+                {c.lastError && <span className="text-amber-300">· {c.lastError}</span>}
+              </li>
+            ))}
+          </ul>
+          {st?.loop && <p className="text-[11px] text-slate-500">Rythme : {st.loop}.</p>}
+          {!!st?.errors?.length && <p className="text-xs text-amber-300">Dernières erreurs : {st.errors.slice(0, 3).join(" · ")}</p>}
+        </>
+      )}
+      <div className="rounded border border-slate-800 p-3">
+        <div className="font-semibold text-slate-200">Relais site → Discord</div>
+        <p className="mt-1 text-xs text-slate-400">
+          Quand cette page est ouverte, ses signaux (dont Binance en temps réel) partent tout de suite sur Discord. Il faut le <strong>code de relais</strong> que tu as mis dans le bot (secret <code>RELAY_KEY</code>) ; il n&apos;est gardé que dans ce navigateur.
+        </p>
+        <p className="mt-1 text-xs">
+          État :{" "}
+          {d.relay?.keySet ? (
+            <span className={d.relay.lastError ? "text-amber-300" : "text-emerald-400"}>
+              activé · {d.relay.sent} signal(s) relayé(s){d.relay.lastError ? ` · erreur : ${d.relay.lastError}` : ""}
+            </span>
+          ) : (
+            <span className="text-slate-500">désactivé</span>
+          )}
+        </p>
+        <div className="mt-2 flex flex-wrap gap-2">
+          <input type="password" autoComplete="off" value={key} onChange={(e) => setKey(e.target.value)} placeholder="code de relais" className="w-48 rounded border border-slate-700 bg-slate-900 px-2 py-1 text-sm" />
+          <button disabled={busy || !key.trim()} onClick={() => void save(key)} className="rounded bg-indigo-600 px-3 py-1 text-sm font-semibold text-white disabled:opacity-40">
+            {busy ? "Vérification…" : "Activer"}
+          </button>
+          {d.relay?.keySet && (
+            <button disabled={busy} onClick={() => void save("")} className="rounded border border-slate-700 px-3 py-1 text-sm text-slate-300">
+              Désactiver
+            </button>
+          )}
+        </div>
+      </div>
     </div>
   );
 }

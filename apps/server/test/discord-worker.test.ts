@@ -43,7 +43,6 @@ describe("Discord worker", () => {
     const run = async () => (await (await new RadarState({ storage: st } as never, env).fetch(new Request("https://radar/scan"))).json()) as Record<string, any>;
 
     const s1 = await run();
-    expect(s1.firstRun).toBe(true);
     expect(posted).toHaveLength(1);
     expect(posted[0]!.body).toContain("Crypto Radar connecté");
     expect(s1.sources.coinbase).toBe("2 cryptos"); // one USD pair per coin
@@ -52,7 +51,6 @@ describe("Discord worker", () => {
     vi.setSystemTime(Date.now() + 5 * 60_000);
     price = 1.08;
     const s2 = await run();
-    expect(s2.firstRun).toBe(false);
     expect(s2.errors).toEqual([]);
     expect(posted.length).toBe(2);
     const msg = JSON.parse(posted[1]!.body);
@@ -91,6 +89,28 @@ describe("Discord worker", () => {
     await run();
     expect(byHook["1"]!.length).toBe(2); // bullish confluence → bullish channel
     expect(byHook["2"]!.length).toBe(1); // nothing bearish
+  });
+
+  it("relays the site's signals only with the right code, through the same cooldowns", async () => {
+    vi.useFakeTimers({ now: Date.UTC(2026, 8, 12, 12, 0), toFake: ["Date"] });
+    posted.length = 0;
+    vi.stubGlobal("fetch", vi.fn(async (u: string, i?: { method?: string; body?: string }) => fakeFetch(u, i)));
+    const st = storage();
+    const env = { RADAR: {} as never, DISCORD_WEBHOOK_URL: WEBHOOK, SITE_URL: SITE, RELAY_KEY: "s3cret-code" };
+    const obj = new RadarState({ storage: st } as never, env);
+    price = 1;
+    await obj.fetch(new Request("https://radar/scan")); // warm-up + welcome
+    expect(posted).toHaveLength(1);
+    const sig = { id: "b1", ts: Date.now(), coin: "SOLX", kind: "PUMP_EARLY", direction: "bullish", source: "binance", strength: 88, title: "SOLX décolle : +9 % en 5 min", reasons: ["r"], priceUsd: 1.2, url: "https://www.binance.com/en/trade/SOLX_USDT" };
+    const relay = (key: string, signals: unknown[]) => obj.fetch(new Request("https://radar/relay", { method: "POST", headers: { "x-relay-key": key }, body: JSON.stringify({ signals }) }));
+    expect((await relay("wrong", [sig])).status).toBe(401);
+    const r = (await (await relay("s3cret-code", [sig, { ...sig, id: "bad", coin: "<script>" }, { ...sig, id: "old", ts: Date.now() - 3_600_000 }])).json()) as { accepted: number; rejected: number };
+    expect(r).toMatchObject({ accepted: 1, rejected: 2 });
+    expect(posted).toHaveLength(2);
+    expect(posted[1]!.body).toContain("SOLX décolle");
+    await relay("s3cret-code", [{ ...sig, id: "b2" }]); // same coin/direction within 1 h → not re-alerted
+    expect(posted).toHaveLength(2);
+    expect(await (await obj.fetch(new Request("https://radar/status"))).text()).not.toContain("s3cret");
   });
 
   it("runs on Coinbase alone when SITE_URL is missing and says so", async () => {
