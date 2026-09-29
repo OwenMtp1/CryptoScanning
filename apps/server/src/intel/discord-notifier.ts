@@ -240,10 +240,10 @@ export class DiscordNotifier {
   }
 
   /** Send a test message right away (dashboard button). */
-  async test(): Promise<{ ok: boolean; message: string }> {
+  async test(note?: string): Promise<{ ok: boolean; message: string }> {
     if (!this.url) return { ok: false, message: this.lastError ?? "DISCORD_WEBHOOK_URL non configurée (fichier .env)" };
     const [msg] = packMessages([
-      { title: "✅ Crypto Radar connecté", description: "Les alertes de signaux arriveront ici. Aucun ordre n'est jamais passé : ce sont des informations, pas des conseils d'investissement.", color: 0x22c55e, timestamp: new Date(this.now()).toISOString() },
+      { title: "✅ Crypto Radar connecté", description: `${note ? `${note}\n\n` : ""}Les alertes de signaux arriveront ici. Aucun ordre n'est jamais passé : ce sont des informations, pas des conseils d'investissement.`, color: 0x22c55e, timestamp: new Date(this.now()).toISOString() },
     ]);
     const r = await this.post(msg as DiscordMessage);
     if (r === "ok") {

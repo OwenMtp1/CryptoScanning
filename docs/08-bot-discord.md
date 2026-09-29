@@ -60,6 +60,8 @@ Dans le worker `crypto-radar-discord` → **Settings** → **Variables and Secre
 |---|---|---|
 | **Secret** | `DISCORD_WEBHOOK_URL` | l'URL copiée à l'étape 1 |
 | Text | `SITE_URL` | l'adresse de ton site, par ex. `https://crypto-radar.pages.dev` |
+| **Secret** (facultatif) | `DISCORD_WEBHOOK_BULLISH` | webhook d'un salon réservé aux signaux **haussiers** |
+| **Secret** (facultatif) | `DISCORD_WEBHOOK_BEARISH` | webhook d'un salon réservé aux signaux **baissiers** |
 | Text (facultatif) | `DISCORD_MIN_STRENGTH` | seuil d'alerte immédiate, `70` par défaut (monte à `80` si c'est trop bavard) |
 | Text (facultatif) | `DISCORD_ROLE_ID` | identifiant d'un rôle Discord à mentionner sur les signaux ≥ 90 |
 
@@ -70,6 +72,14 @@ Clique sur **Save / Deploy**.
 - Dans les 5 minutes, le message **« ✅ Crypto Radar connecté »** arrive dans ton salon.
 - Tu peux aussi ouvrir l'adresse du worker (`https://crypto-radar-discord.<ton-compte>.workers.dev`). Elle affiche l'état
   de la dernière analyse : sources lues, erreurs, état Discord. Aucun secret n'y apparaît.
+
+### Un salon haussier et un salon baissier (facultatif)
+
+1. Crée deux salons, par exemple `🟢-haussier` et `🔴-baissier`, avec un webhook dans chacun.
+2. Mets leurs URL dans `DISCORD_WEBHOOK_BULLISH` et `DISCORD_WEBHOOK_BEARISH`.
+
+Chaque salon reçoit alors un message de bienvenue qui dit ce qu'il va recevoir, puis uniquement ses alertes.
+`DISCORD_WEBHOOK_URL` devient facultatif : s'il est rempli, il reçoit ce qui ne va dans aucun des deux salons.
 
 ## Problèmes fréquents
 

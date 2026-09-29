@@ -72,6 +72,27 @@ describe("Discord worker", () => {
     expect(status).toContain("lastRunAt");
   });
 
+  it("routes bullish and bearish alerts to separate channels", async () => {
+    vi.useFakeTimers({ now: Date.UTC(2026, 8, 11, 12, 0), toFake: ["Date"] });
+    const byHook: Record<string, string[]> = {};
+    vi.stubGlobal("fetch", vi.fn(async (u: string, i?: { method?: string; body?: string }) => {
+      if (u.startsWith("https://discord.com/")) (byHook[u.split("/")[5]!] ??= []).push(i?.body ?? "");
+      return fakeFetch(u, i);
+    }));
+    const st = storage();
+    const env = { RADAR: {} as never, DISCORD_WEBHOOK_BULLISH: "https://discord.com/api/webhooks/1/up", DISCORD_WEBHOOK_BEARISH: "https://discord.com/api/webhooks/2/down", SITE_URL: SITE };
+    const run = () => new RadarState({ storage: st } as never, env).fetch(new Request("https://radar/scan"));
+    price = 1;
+    await run();
+    expect(byHook["1"]![0]).toContain("haussiers");
+    expect(byHook["2"]![0]).toContain("baissiers");
+    vi.setSystemTime(Date.now() + 5 * 60_000);
+    price = 1.1;
+    await run();
+    expect(byHook["1"]!.length).toBe(2); // bullish confluence → bullish channel
+    expect(byHook["2"]!.length).toBe(1); // nothing bearish
+  });
+
   it("runs on Coinbase alone when SITE_URL is missing and says so", async () => {
     vi.stubGlobal("fetch", vi.fn(async (u: string, i?: { method?: string; body?: string }) => fakeFetch(u, i)));
     const st = storage();

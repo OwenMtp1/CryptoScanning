@@ -18,6 +18,9 @@ import { IntelService, type IntelSavedState } from "../../../apps/server/src/int
 interface Env {
   RADAR: { idFromName(n: string): unknown; get(id: unknown): { fetch(url: string): Promise<Response> } };
   DISCORD_WEBHOOK_URL?: string;
+  /** Optional: separate channels. Bullish / bearish alerts go there; the rest goes to DISCORD_WEBHOOK_URL. */
+  DISCORD_WEBHOOK_BULLISH?: string;
+  DISCORD_WEBHOOK_BEARISH?: string;
   SITE_URL?: string;
   DISCORD_MIN_STRENGTH?: string;
   DISCORD_ROLE_ID?: string;
@@ -76,23 +79,40 @@ export class RadarState {
     const meta = (await st.get<{ warm?: boolean }>("meta")) ?? {};
     const firstRun = !meta.warm;
 
-    const notifier = new DiscordNotifier({
-      webhookUrl: env.DISCORD_WEBHOOK_URL ?? null,
-      cfg: cfg.discord,
-      fetchText,
-      log: (e) => {
-        if (e.level === "warn" || e.level === "error") errors.push(e.message);
-      },
-      hitRateOf: () => null,
-      now: () => now,
-    });
-    notifier.importState(await st.get("discord"));
+    // Channel routing: one webhook per direction when configured, the general webhook for the rest.
+    const bull = env.DISCORD_WEBHOOK_BULLISH?.trim() || null;
+    const bear = env.DISCORD_WEBHOOK_BEARISH?.trim() || null;
+    const general = env.DISCORD_WEBHOOK_URL?.trim() || null;
+    const specs: { id: string; label: string; url: string | null; directions: ("bullish" | "bearish" | "neutral")[] }[] = [
+      { id: "bullish", label: "haussier", url: bull, directions: ["bullish"] },
+      { id: "bearish", label: "baissier", url: bear, directions: ["bearish"] },
+      { id: "general", label: "général", url: general, directions: cfg.discord.directions.filter((d) => !(d === "bullish" && bull) && !(d === "bearish" && bear)) },
+    ];
+    const savedDiscord = ((await st.get<Record<string, unknown>>("discord")) ?? {}) as Record<string, unknown>;
+    const channels = specs
+      .filter((c) => c.url && c.directions.length)
+      .map((c) => {
+        const n = new DiscordNotifier({
+          webhookUrl: c.url,
+          cfg: { ...cfg.discord, directions: c.directions },
+          fetchText,
+          log: (e) => {
+            if (e.level === "warn" || e.level === "error") errors.push(`Discord ${c.label} : ${e.message}`);
+          },
+          hitRateOf: () => null,
+          now: () => now,
+        });
+        // Old single-channel state (v1) belongs to the general channel.
+        n.importState((savedDiscord[c.id] ?? (c.id === "general" && "lastCoinAt" in savedDiscord ? savedDiscord : undefined)) as never);
+        return { ...c, n };
+      });
+    const welcomed = new Set(((await st.get<{ welcomed?: string[] }>("meta")) ?? {}).welcomed ?? []);
     let signals = 0;
     // First run: learn the current state silently (otherwise everything already moving would be alerted at once).
     const svc = new IntelService({
       cfg,
       log: () => {},
-      notifier: firstRun ? null : { consider: (s) => (signals++, notifier.consider(s)), view: () => notifier.view() },
+      notifier: firstRun ? null : { consider: (s) => (signals++, channels.forEach((c) => c.n.consider(s))), view: () => channels[0]?.n.view() ?? null },
       enabledSources: ["coinbase", "coingecko", "trending", "derivatives", "dex", "news"],
       now: () => now,
     });
@@ -180,12 +200,18 @@ export class RadarState {
     }
 
     // 5. Discord.
-    if (firstRun) {
-      if (notifier.active) {
-        const r = await notifier.test();
-        if (!r.ok) errors.push(`Discord : ${r.message}`);
+    for (const c of channels) {
+      if (!c.n.active) {
+        errors.push(`Discord ${c.label} : ${c.n.view().lastError ?? "webhook invalide"}`);
+        continue;
       }
-    } else await notifier.pump();
+      if (!welcomed.has(c.id)) {
+        // New channel: a hello message instead of a burst of alerts.
+        const r = await c.n.test(c.id === "bullish" ? "🟢 Ce salon reçoit les signaux **haussiers** (cryptos qui pourraient exploser)." : c.id === "bearish" ? "🔴 Ce salon reçoit les signaux **baissiers** (cryptos qui pourraient chuter)." : c.directions.length < 2 ? `Ce salon reçoit les signaux ${c.directions.includes("bullish") ? "haussiers" : "baissiers"}.` : "Ce salon reçoit tous les signaux (haussiers 🟢 et baissiers 🔴).");
+        if (r.ok) welcomed.add(c.id);
+        else errors.push(`Discord ${c.label} : ${r.message}`);
+      } else if (!firstRun) await c.n.pump();
+    }
 
     // 6. Save (compact: the worker needs cooldowns and recent signals, not full history).
     const intel = svc.exportState();
@@ -200,10 +226,10 @@ export class RadarState {
       signals,
       sources,
       errors: errors.slice(0, 20),
-      config: { siteUrl: site || null, webhookConfigured: notifier.active, minStrength: cfg.discord.minStrength },
-      discord: notifier.view(),
+      config: { siteUrl: site || null, webhookConfigured: channels.some((c) => c.n.active), minStrength: cfg.discord.minStrength },
+      discord: Object.fromEntries(channels.map((c) => [c.label, { directions: c.directions, ...c.n.view() }])),
     };
-    await st.put({ intel, cb: history.export(), discord: notifier.exportState(), meta: { warm: true }, status });
+    await st.put({ intel, cb: history.export(), discord: Object.fromEntries(channels.map((c) => [c.id, c.n.exportState()])), meta: { warm: true, welcomed: [...welcomed] }, status });
     return status;
   }
 }
