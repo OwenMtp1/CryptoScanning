@@ -89,7 +89,7 @@ export default function SourcesPage() {
           {d.web ? (
             <WebDiscord d={d} />
           ) : !dc ? (
-            <p className="text-sm text-slate-500">{d.simulated ? "Démo : pas d'envoi Discord (possible uniquement avec le serveur local et ton webhook)." : d.web ? "Site web : pas d'alertes Discord (elles demandent un programme qui tourne 24 h/24, l'analyse s'arrête quand la page est fermée)." : "Non disponible."}</p>
+            <p className="text-sm text-slate-500">{d.simulated ? "Démo : pas d'envoi Discord (possible uniquement avec le serveur local et ton webhook)." : d.web ? "Les alertes Discord sont envoyées par le bot (worker crypto-radar-discord), 24 h/24." : "Non disponible."}</p>
           ) : (
             <>
               <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
