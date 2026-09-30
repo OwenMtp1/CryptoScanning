@@ -7,6 +7,13 @@
 import {
   BinanceRestHistory,
   CoinMatcher,
+  SocialBuzz,
+  isNoiseCoin,
+  readLeverage,
+  type LeverageReading,
+  type PerpMarket,
+  type SocialPost,
+  type SocialState,
   CoinbasePriceHistory,
   IntelEngine,
   OutcomeTracker,
@@ -60,7 +67,24 @@ export interface IntelSavedState {
   tracker: TrackedSignal[];
   trendingIds: string[] | null;
   openInterest: Record<string, number>;
+  /** coin → learned usual 5-min move. */
+  volatility?: Record<string, VolEntry>;
+  social?: SocialState;
+  leverage?: { lastBias: Record<string, string>; oi: Record<string, number> };
   extras?: Record<string, unknown>;
+}
+
+interface VolEntry {
+  ewma: number;
+  n: number;
+  at: number;
+}
+
+export interface MarketContext {
+  btcChange1h: number | null;
+  btcChange24h: number | null;
+  regime: "hausse" | "baisse" | "calme" | "inconnu";
+  note: string;
 }
 
 export interface UniverseQuery {
@@ -80,6 +104,8 @@ const SOURCE_LABEL: Record<IntelSource | "discord", string> = {
   derivatives: "Dérivés (funding, open interest)",
   dex: "DEX on-chain (GeckoTerminal)",
   news: "Actualités (RSS)",
+  social: "Réseaux sociaux (Reddit)",
+  leverage: "Marchés à levier (Coinbase perpétuels)",
   discord: "Discord",
 };
 
@@ -105,6 +131,13 @@ export class IntelService {
   private trendingIds: Set<string> | null = null;
   private openInterest = new Map<string, number>();
   private statsCache: { at: number; stats: KindStats[] } | null = null;
+  private readonly vol = new Map<string, VolEntry>();
+  private social: SocialBuzz;
+  private leverageBoard: LeverageReading[] = [];
+  private leverageAt: number | null = null;
+  private lastBias = new Map<string, string>();
+  private perpOi = new Map<string, number>();
+  private readonly liq = new Map<string, { ts: number; side: "long" | "short"; usd: number }[]>();
   private pending: IntelBatch = { signals: [], news: [] };
   private flushTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly now: () => number;
@@ -115,7 +148,8 @@ export class IntelService {
     this.now = o.now ?? Date.now;
     this.engine = new IntelEngine(o.cfg);
     this.tracker = new OutcomeTracker(o.cfg.tracking);
-    for (const s of ["binance", "coinbase", "coingecko", "trending", "derivatives", "dex", "news", "discord"] as const) {
+    this.social = new SocialBuzz(o.cfg.social);
+    for (const s of ["binance", "coinbase", "coingecko", "trending", "derivatives", "dex", "news", "social", "leverage", "discord"] as const) {
       const on = o.enabledSources.includes(s);
       this.health.set(s, { source: s, enabled: on, state: on ? "waiting" : "disabled", lastSuccessAt: null, lastError: null, items: 0, note: SOURCE_LABEL[s] });
     }
@@ -134,6 +168,10 @@ export class IntelService {
     this.tracker.importState(st.tracker ?? []);
     this.trendingIds = st.trendingIds ? new Set(st.trendingIds) : null;
     this.openInterest = new Map(Object.entries(st.openInterest ?? {}));
+    for (const [k, v] of Object.entries(st.volatility ?? {})) this.vol.set(k, v);
+    if (st.social) this.social = new SocialBuzz(this.cfg.social, st.social);
+    this.lastBias = new Map(Object.entries(st.leverage?.lastBias ?? {}));
+    this.perpOi = new Map(Object.entries(st.leverage?.oi ?? {}));
   }
 
   exportState(extras?: Record<string, unknown>): IntelSavedState {
@@ -144,6 +182,9 @@ export class IntelService {
       tracker: this.tracker.exportState(),
       trendingIds: this.trendingIds ? [...this.trendingIds] : null,
       openInterest: Object.fromEntries(this.openInterest),
+      volatility: Object.fromEntries(this.vol),
+      social: this.social.export(),
+      leverage: { lastBias: Object.fromEntries(this.lastBias), oi: Object.fromEntries(this.perpOi) },
       extras,
     };
   }
@@ -177,26 +218,26 @@ export class IntelService {
       const s = tracker.snapshot(coin, now);
       if (!s) continue;
       this.engine.upsertLive(s, now, "binance");
-      cands.push(...detectLive(s, this.cfg.binance, "binance"));
+      cands.push(...detectLive(this.withVol(s, now), this.cfg.binance, "binance"));
     }
     const h = this.health.get("binance");
     if (h) {
       h.items = tracker.coins().length;
       h.lastSuccessAt = now;
     }
-    this.emit(this.engine.ingest(cands, now), []);
+    this.emit(this.ingest(cands, now), []);
   }
 
   /** Binance all-market REST snapshot (scheduled worker without WebSocket). */
-  onBinanceTickers(tickers: BinanceMiniRestTicker[], history: BinanceRestHistory, now = this.now()) {
+  onBinanceTickers(tickers: BinanceMiniRestTicker[], history: BinanceRestHistory, now = this.now(), flow?: Map<string, number>) {
     const snaps = history.update(tickers, now);
     const cands: Candidate[] = [];
     for (const s of snaps) {
       this.engine.upsertLive(s, now, "binance");
-      cands.push(...detectLive(s, this.cfg.binance, "binance"));
+      cands.push(...detectLive({ ...this.withVol(s, now), takerBuyRatio: flow?.get(s.coin) ?? null }, this.cfg.binance, "binance"));
     }
     this.setSourceState("binance", "ok", `${snaps.length} cryptos (Binance, relevé toutes les 20 s)`, now, snaps.length);
-    this.emit(this.engine.ingest(cands, now), []);
+    this.emit(this.ingest(cands, now), []);
   }
 
   /**
@@ -214,10 +255,10 @@ export class IntelService {
       if (row?.onBinance && row.live && now - row.live.updatedAt < 120_000) continue;
       this.engine.upsertLive(s, now, "coinbase");
       live++;
-      for (const c of detectLive(s, this.cfg.binance, "coinbase")) cands.push({ ...c, url: `https://www.coinbase.com/advanced-trade/spot/${s.pair}` });
+      for (const c of detectLive(this.withVol(s, now), this.cfg.binance, "coinbase")) cands.push({ ...c, url: `https://www.coinbase.com/advanced-trade/spot/${s.pair}` });
     }
     this.setSourceState("coinbase", "ok", `${snaps.length} cryptos cotées sur Coinbase, dont ${live} suivies via Coinbase (absentes du flux Binance)`, now, snaps.length);
-    this.emit(this.engine.ingest(cands, now), []);
+    this.emit(this.ingest(cands, now), []);
   }
 
   markCoinbase(bases: Iterable<string>, now = this.now()) {
@@ -263,20 +304,20 @@ export class IntelService {
       });
     }
     if (cands.length) this.setSourceState("coinbase", "ok", null, now);
-    this.emit(this.engine.ingest(cands, now), []);
+    this.emit(this.ingest(cands, now), []);
   }
 
   onMarkets(rows: CgMarketRow[], _page: number, now = this.now()) {
     this.engine.upsertMarkets(rows, now);
     const cands = rows.flatMap((r) => detectMarketRow(r, this.cfg.coingecko));
-    this.emit(this.engine.ingest(cands, now), []);
+    this.emit(this.ingest(cands, now), []);
   }
 
   onTrending(list: TrendingCoin[], now = this.now()) {
     const cands = detectTrendingEntries(list, this.trendingIds, (s) => this.engine.priceOf(s));
     this.trendingIds = new Set(list.map((c) => c.id));
     this.engine.setTrending(list, now);
-    this.emit(this.engine.ingest(cands, now), []);
+    this.emit(this.ingest(cands, now), []);
   }
 
   onDerivatives(rows: CgDerivative[], now = this.now()) {
@@ -289,17 +330,18 @@ export class IntelService {
       cands.push(...detectDerivatives(a, this.openInterest.get(a.coin) ?? null, this.cfg.coingecko, this.engine.priceOf(a.coin)));
       this.openInterest.set(a.coin, a.openInterestUsd);
     }
-    this.emit(this.engine.ingest(cands, now), []);
+    this.emit(this.ingest(cands, now), []);
   }
 
   onPools(doc: GtPools, isNewList: boolean, now = this.now()) {
-    this.emit(this.engine.ingest(detectPools(doc, this.cfg.coingecko.dex, now, isNewList), now), []);
+    this.emit(this.ingest(detectPools(doc, this.cfg.coingecko.dex, now, isNewList), now), []);
   }
 
   onNews(feedName: string, raw: RawFeedItem[], now = this.now()) {
     this.refreshMatcher(now);
     const items = raw.map((r) => toNewsItem(r, feedName, this.matcher));
     const r = this.engine.addNews(items, now);
+    r.signals = r.signals.filter((x) => !isNoiseCoin(x.coin));
     const h = this.health.get("news");
     if (h) {
       h.items = this.engine.recentNews({ limit: 100_000 }).length;
@@ -332,7 +374,7 @@ export class IntelService {
     if (!signals.length && !news.length) return;
     for (const s of signals) {
       // DEX tokens are identified by pool, not by the universe price: not tracked.
-      if (s.source !== "dex") this.tracker.track(s);
+      if (s.source !== "dex" && s.source !== "leverage") this.tracker.track(s, this.engine.priceOf("BTC"));
       this.o.notifier?.consider(s);
       this.o.log({
         type: "INTEL_SIGNAL",
@@ -364,6 +406,178 @@ export class IntelService {
     return () => this.listeners.delete(l);
   }
 
+  // ─── Refinement: noise filter, calibration from results, market context ──
+
+  /** Learn each coin's usual 5-min move (EWMA of |5-min change|, one sample per minute). */
+  private withVol<T extends { coin: string; change5m: number | null }>(s: T, now: number): T & { vol5m: number | null } {
+    const e = this.vol.get(s.coin);
+    if (s.change5m !== null && Number.isFinite(s.change5m) && (!e || now - e.at >= 60_000)) {
+      const a = Math.abs(s.change5m);
+      this.vol.set(s.coin, e ? { ewma: e.ewma * 0.97 + a * 0.03, n: e.n + 1, at: now } : { ewma: a, n: 1, at: now });
+    }
+    const v = this.vol.get(s.coin);
+    return { ...s, vol5m: v && v.n >= 30 ? v.ewma : null };
+  }
+
+  marketContext(): MarketContext {
+    const b = this.engine.coin("BTC");
+    const c1 = b?.live?.change1h ?? b?.change1h ?? null;
+    const c24 = b?.change24h ?? null;
+    if (c1 === null) return { btcChange1h: null, btcChange24h: c24, regime: "inconnu", note: "Bitcoin pas encore mesuré" };
+    const regime = c1 <= -1.5 ? "baisse" : c1 >= 1.5 ? "hausse" : "calme";
+    return { btcChange1h: c1, btcChange24h: c24, regime, note: regime === "calme" ? `marché calme (Bitcoin ${c1 > 0 ? "+" : ""}${c1.toFixed(2)} % en 1 h)` : `marché en ${regime} (Bitcoin ${c1 > 0 ? "+" : ""}${c1.toFixed(2)} % en 1 h)` };
+  }
+
+  /** Measured reliability of a kind × direction (1 h, relative to Bitcoin when possible). */
+  private reliability(kind: string, direction: Direction): { p: number; n: number } | null {
+    const k = this.stats().find((x) => x.kind === kind && x.direction === direction);
+    const h = k?.horizons["60"];
+    if (!h) return null;
+    const n = h.excessN >= 20 ? h.excessN : h.n;
+    const rate = h.excessN >= 20 ? h.excessHitRatePct : h.hitRatePct;
+    if (n < 20 || rate === null) return null;
+    return { p: rate / 100, n };
+  }
+
+  private ingest(cands: Candidate[], now: number): IntelSignal[] {
+    const ctx = this.marketContext();
+    const out: Candidate[] = [];
+    for (const c0 of cands) {
+      if (isNoiseCoin(c0.coin)) continue; // stablecoins, wrapped / staked copies
+      const c = { ...c0, reasons: [...c0.reasons] };
+      // 1. Reliability measured on past outcomes (shrunk towards 50 % while data is thin).
+      const r = this.reliability(c.kind, c.direction);
+      if (r) {
+        const hits = r.p * r.n;
+        const p = (hits + 5) / (r.n + 10);
+        const factor = Math.max(0.7, Math.min(1.3, 0.5 + p));
+        c.strength = c.strength * factor;
+        c.reasons.push(`fiabilité mesurée de ce type de signal : ${(r.p * 100).toFixed(0)} % de réussite à 1 h (${r.n} mesures)`);
+      }
+      // 2. Market context: fighting a strong Bitcoin move rarely works for smaller coins.
+      if (ctx.btcChange1h !== null && c.coin !== "BTC" && ctx.regime !== "calme" && c.direction !== "neutral" && c.source !== "leverage") {
+        const against = (ctx.regime === "baisse" && c.direction === "bullish") || (ctx.regime === "hausse" && c.direction === "bearish");
+        c.strength *= against ? 0.8 : 1.1;
+        c.reasons.push(against ? `prudence : ${ctx.note}, signal à contre-courant` : `porté par le marché : ${ctx.note}`);
+      }
+      c.strength = Math.max(0, Math.min(100, Math.round(c.strength)));
+      out.push(c);
+    }
+    return this.engine.ingest(out, now);
+  }
+
+  // ─── Social, liquidations, leveraged markets ─────────────────────────────
+
+  /** Reddit (or other social) posts: attention spikes per coin. */
+  onSocial(feed: string, raw: RawFeedItem[], now = this.now()) {
+    this.refreshMatcher(now);
+    const posts: SocialPost[] = raw.map((r) => {
+      const n = toNewsItem(r, feed, this.matcher);
+      return { id: n.id, ts: n.ts, coins: n.coins, direction: n.direction, title: n.title, link: n.link, feed };
+    });
+    this.setSourceState("social", "ok", `${posts.length} posts lus (${feed})`, now, posts.length);
+    this.emit(this.ingest(this.social.add(posts, now), now), []);
+  }
+
+  /** Binance USDⓈ-M liquidation orders (`!forceOrder@arr`): side SELL = a long was liquidated. */
+  onLiquidations(list: { symbol: string; side: "BUY" | "SELL"; usd: number; ts: number }[], now = this.now()) {
+    const cands: Candidate[] = [];
+    const touched = new Set<string>();
+    for (const l of list) {
+      const coin = l.symbol.replace(/(USDT|USDC|BUSD)$/, "");
+      if (!coin || !(l.usd > 0)) continue;
+      const arr = this.liq.get(coin) ?? [];
+      arr.push({ ts: l.ts, side: l.side === "SELL" ? "long" : "short", usd: l.usd });
+      this.liq.set(coin, arr);
+      touched.add(coin);
+    }
+    for (const coin of touched) {
+      const arr = (this.liq.get(coin) ?? []).filter((x) => x.ts > now - 5 * 60_000);
+      this.liq.set(coin, arr);
+      for (const side of ["long", "short"] as const) {
+        const xs = arr.filter((x) => x.side === side);
+        const usd = xs.reduce((a, x) => a + x.usd, 0);
+        if (usd < this.cfg.leverage.liquidationUsd5m || xs.length < 3) continue;
+        const longs = side === "long";
+        cands.push({
+          coin,
+          coinName: null,
+          kind: longs ? "LIQUIDATIONS_LONG" : "LIQUIDATIONS_SHORT",
+          direction: longs ? "bearish" : "bullish",
+          source: "derivatives",
+          strength: Math.round(Math.min(95, 55 + Math.log10(usd / this.cfg.leverage.liquidationUsd5m) * 25 + xs.length)),
+          title: `${coin} : ${(usd / 1e6).toFixed(2)} M$ de positions ${longs ? "LONGUES" : "COURTES"} liquidées en 5 min`,
+          reasons: [`${xs.length} liquidations forcées sur Binance Futures en 5 min`, longs ? "les acheteurs à levier sont éjectés : la chute peut s'accélérer (cascade)" : "les vendeurs à découvert sont éjectés : short squeeze, la hausse peut s'accélérer", "après une grosse cascade, un rebond rapide est aussi fréquent"],
+          metrics: { liquidatedUsd5m: Math.round(usd), liquidations5m: xs.length },
+          priceUsd: null,
+          url: `https://www.binance.com/en/futures/${coin}USDT`,
+        });
+      }
+    }
+    this.setSourceState("derivatives", "ok", null, now);
+    this.emit(this.ingest(cands, now), []);
+  }
+
+  /**
+   * Coinbase perpetual markets: reading per market and LONG / SHORT setup
+   * signals when the score crosses the configured level.
+   */
+  onPerps(markets: PerpMarket[], extras: Map<string, { takerBuyRatio?: number | null; longShortRatio?: number | null }>, now = this.now()) {
+    const ctx = this.marketContext();
+    const board: LeverageReading[] = [];
+    const cands: Candidate[] = [];
+    for (const m of markets) {
+      const row = this.engine.coin(m.coin);
+      const prevOi = this.perpOi.get(m.productId);
+      if (m.openInterest !== null) this.perpOi.set(m.productId, m.openInterest);
+      const recent = this.engine.recentSignals({ coin: m.coin, since: now - 2 * 3_600_000, limit: 30 }).filter((s) => s.source !== "leverage");
+      const x = extras.get(m.coin);
+      const reading = readLeverage(m, {
+        change15m: row?.live?.change15m ?? null,
+        change1h: row?.live?.change1h ?? row?.change1h ?? null,
+        takerBuyRatio: x?.takerBuyRatio ?? null,
+        binanceFundingPct: row?.fundingRatePct ?? null,
+        longShortRatio: x?.longShortRatio ?? null,
+        oiChangePct: prevOi && m.openInterest !== null && prevOi > 0 ? ((m.openInterest - prevOi) / prevOi) * 100 : null,
+        recent: recent.map((s) => ({ direction: s.direction, strength: s.strength, kind: s.kind })),
+        btcChange1h: ctx.btcChange1h,
+      });
+      board.push(reading);
+      const setup = Math.abs(reading.score) >= this.cfg.leverage.signalScore ? reading.bias : "NEUTRE";
+      const last = this.lastBias.get(m.productId) ?? "NEUTRE";
+      if (setup !== last) this.lastBias.set(m.productId, setup);
+      if (setup !== "NEUTRE" && setup !== last) {
+        const long = setup === "LONG";
+        cands.push({
+          coin: m.coin,
+          coinName: row?.name ?? null,
+          kind: long ? "LEVERAGE_LONG" : "LEVERAGE_SHORT",
+          direction: long ? "bullish" : "bearish",
+          source: "leverage",
+          strength: Math.min(100, Math.abs(reading.score)),
+          title: `${m.name} : indication ${setup} (score ${reading.score})${m.maxLeverage ? ` — levier max ×${m.maxLeverage}` : ""}`,
+          reasons: [...reading.reasons, reading.liquidationMovePct !== null ? `⚠️ au levier max, ${reading.liquidationMovePct} % contre toi = liquidation` : "⚠️ levier : pertes amplifiées", "lecture statistique, pas un conseil"],
+          metrics: { productId: m.productId, score: reading.score, maxLeverage: m.maxLeverage, fundingRatePct: m.fundingPct, openInterest: m.openInterest },
+          priceUsd: m.price,
+          url: m.url,
+        });
+      }
+    }
+    this.leverageBoard = board.sort((a, b) => Math.abs(b.score) - Math.abs(a.score));
+    this.leverageAt = now;
+    this.setSourceState("leverage", "ok", `${markets.length} marchés perpétuels Coinbase`, now, markets.length);
+    this.emit(this.ingest(cands, now), []);
+  }
+
+  /** Candidates produced outside the built-in sources (e.g. new listings detected by the bot). */
+  ingestExternal(cands: Candidate[], now = this.now()) {
+    this.emit(this.ingest(cands, now), []);
+  }
+
+  leverage() {
+    return { at: this.leverageAt, markets: this.leverageBoard, context: this.marketContext() };
+  }
+
   // ─── Queries ─────────────────────────────────────────────────────────────
 
   stats(): KindStats[] {
@@ -376,12 +590,13 @@ export class IntelService {
   hitRateOf(s: Pick<IntelSignal, "kind" | "direction">): number | null {
     const k = this.stats().find((x) => x.kind === s.kind && x.direction === s.direction);
     const h = k?.horizons["60"];
+    if (h && h.excessN >= 10) return h.excessHitRatePct;
     return h && h.n >= 10 ? h.hitRatePct : null;
   }
 
   feed(f: IntelFilter) {
     const signals = this.engine.recentSignals(f);
-    return { signals: signals.map((s) => ({ ...s, hitRate1h: this.hitRateOf(s) })), counts: this.counts() };
+    return { signals: signals.map((s) => ({ ...s, hitRate1h: this.hitRateOf(s) })), counts: this.counts(), market: this.marketContext() };
   }
 
   private counts() {

@@ -1,6 +1,6 @@
 /** Multi-source crypto intelligence: signals, news and the coin universe. */
 
-export type IntelSource = "coinbase" | "binance" | "coingecko" | "trending" | "derivatives" | "dex" | "news";
+export type IntelSource = "coinbase" | "binance" | "coingecko" | "trending" | "derivatives" | "dex" | "news" | "social" | "leverage";
 export type Direction = "bullish" | "bearish" | "neutral";
 
 export type IntelKind =
@@ -27,6 +27,16 @@ export type IntelKind =
   // News
   | "NEWS_BULLISH"
   | "NEWS_BEARISH"
+  // New listing on an exchange
+  | "NEW_LISTING"
+  // Futures liquidation cascades (Binance USDⓈ-M)
+  | "LIQUIDATIONS_LONG"
+  | "LIQUIDATIONS_SHORT"
+  // Attention spike on social networks (Reddit)
+  | "SOCIAL_BUZZ"
+  // Leveraged markets: long / short setup
+  | "LEVERAGE_LONG"
+  | "LEVERAGE_SHORT"
   // Several independent sources agree
   | "CONFLUENCE";
 

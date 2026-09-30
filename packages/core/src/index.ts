@@ -34,3 +34,5 @@ export * from "./intel/live.js";
 export * from "./intel/discord.js";
 export * from "./intel/coinbase-live.js";
 export * from "./intel/binance-rest.js";
+export * from "./intel/social.js";
+export * from "./intel/leverage.js";

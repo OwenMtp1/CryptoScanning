@@ -3,6 +3,8 @@ import { useEffect, useState, type ComponentType } from "react";
 import FluxPage from "../app/page";
 import PerformancePage from "../app/performance/page";
 import SourcesPage from "../app/sources/page";
+import LevierPage from "../app/levier/page";
+import DiscordPage from "../app/discord/page";
 import UniversPage from "../app/univers/page";
 import { DialogProvider } from "../components/Dialogs";
 import { CoinDrawerProvider } from "../components/Intel";
@@ -15,11 +17,15 @@ const ROUTES: Record<string, ComponentType> = {
   "/univers": UniversPage,
   "/performance": PerformancePage,
   "/sources": SourcesPage,
+  "/levier": LevierPage,
+  "/discord": DiscordPage,
 };
 const NAV = [
   ["/", "Flux"],
   ["/univers", "Univers"],
   ["/performance", "Performance"],
+  ["/levier", "Levier"],
+  ["/discord", "Discord"],
   ["/sources", "Sources"],
 ] as const;
 

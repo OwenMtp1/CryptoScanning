@@ -12,13 +12,15 @@ import type { CoinRow, Direction, IntelSignal, IntelSource, NewsItem } from "./t
 const MAX_SIGNALS = 5000;
 const MAX_NEWS = 3000;
 /** Sources that can be combined for confluence (DEX symbols are ambiguous across tokens). */
-const CONFLUENCE_SOURCES: ReadonlySet<IntelSource> = new Set(["binance", "coinbase", "coingecko", "trending", "derivatives", "news"]);
+const CONFLUENCE_SOURCES: ReadonlySet<IntelSource> = new Set(["binance", "coinbase", "coingecko", "trending", "derivatives", "news", "social"]);
 /**
  * Independent families of evidence. Binance, Coinbase and CoinGecko all see
  * the same price move, so they count as ONE family: a confluence needs
  * agreement between different kinds of information (price, attention, leverage).
  */
-const FAMILY: Partial<Record<IntelSource, string>> = { binance: "prix", coinbase: "prix", coingecko: "prix", trending: "attention", news: "actualités", derivatives: "dérivés" };
+const FAMILY: Partial<Record<IntelSource, string>> = { binance: "prix", coinbase: "prix", coingecko: "prix", trending: "attention", social: "attention", news: "actualités", derivatives: "dérivés" };
+/** A new listing is its own kind of evidence, whatever exchange reports it. */
+const familyOf = (s: IntelSignal) => (s.kind === "NEW_LISTING" ? "listing" : (FAMILY[s.source] ?? s.source));
 
 export interface IntelFilter {
   direction?: Direction;
@@ -192,7 +194,7 @@ export class IntelEngine {
       if (s.coin === sig.coin && s.direction === sig.direction && s.kind !== "CONFLUENCE" && CONFLUENCE_SOURCES.has(s.source)) related.push(s);
     }
     const sources = new Set(related.map((s) => s.source));
-    const families = new Set(related.map((s) => FAMILY[s.source] ?? s.source));
+    const families = new Set(related.map(familyOf));
     if (families.size < this.cfg.confluence.minSources) return null;
     const key = `${sig.coin}:CONFLUENCE:${sig.direction}`;
     const last = this.lastEmit.get(key);
@@ -282,6 +284,26 @@ export class IntelEngine {
       out.push(n);
     }
     return out;
+  }
+
+  /**
+   * Signals detected elsewhere (e.g. the 24/7 bot, shown on the site): stored
+   * for display only — no cooldown, no confluence, no listener.
+   */
+  addExternal(signals: IntelSignal[]): number {
+    const known = new Set(this.signals.map((s) => s.id));
+    let added = 0;
+    for (const s of signals) {
+      if (known.has(s.id)) continue;
+      known.add(s.id);
+      this.signals.push(s);
+      added++;
+    }
+    if (added) {
+      this.signals.sort((a, b) => a.ts - b.ts);
+      if (this.signals.length > MAX_SIGNALS) this.signals.splice(0, this.signals.length - MAX_SIGNALS);
+    }
+    return added;
   }
 
   /** Persistence helpers. */

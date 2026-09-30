@@ -1,9 +1,41 @@
 import type { CoinRow, Direction, IntelKind, IntelSignal, IntelSource, KindStats, NewsItem, SourceHealth, TrackedSignal } from "@radar/core";
 
 export type FeedSignal = IntelSignal & { hitRate1h?: number | null };
+export interface MarketContextView {
+  btcChange1h: number | null;
+  btcChange24h: number | null;
+  regime: "hausse" | "baisse" | "calme" | "inconnu";
+  note: string;
+}
 export interface FeedResponse {
   signals: FeedSignal[];
   counts: { lastHour: number; bullish: number; bearish: number; confluences: number; universe: number };
+  market?: MarketContextView;
+}
+export interface LeverageMarketView {
+  productId: string;
+  coin: string;
+  name: string;
+  venue: string | null;
+  maxLeverage: number | null;
+  price: number | null;
+  change24h: number | null;
+  fundingPct: number | null;
+  openInterest: number | null;
+  volume24hUsd: number | null;
+  url: string;
+  score: number;
+  bias: "LONG" | "SHORT" | "NEUTRE";
+  reasons: string[];
+  anomalies: string[];
+  liquidationMovePct: number | null;
+  context: { change15m: number | null; change1h: number | null; takerBuyRatio: number | null; binanceFundingPct: number | null; longShortRatio: number | null; oiChangePct: number | null };
+}
+export interface LeverageResponse {
+  at: number | null;
+  markets: LeverageMarketView[];
+  context: MarketContextView | null;
+  unavailable?: boolean;
 }
 export type UniverseRow = CoinRow & { signals24h: number; lastSignal: { kind: IntelKind; direction: Direction; strength: number; ts: number } | null };
 export interface UniverseResponse {
@@ -87,6 +119,12 @@ export const KIND_LABEL: Record<IntelKind, string> = {
   DEX_RUG_RISK: "Risque de rug",
   NEWS_BULLISH: "Actu positive",
   NEWS_BEARISH: "Actu négative",
+  NEW_LISTING: "🆕 Nouveau listing",
+  LIQUIDATIONS_LONG: "Liquidations des longs",
+  LIQUIDATIONS_SHORT: "Liquidations des shorts",
+  SOCIAL_BUZZ: "Buzz Reddit",
+  LEVERAGE_LONG: "Levier : LONG",
+  LEVERAGE_SHORT: "Levier : SHORT",
   CONFLUENCE: "CONFLUENCE",
 };
 
@@ -98,6 +136,8 @@ export const SOURCE_LABEL: Record<IntelSource | "discord", string> = {
   derivatives: "Dérivés",
   dex: "DEX",
   news: "Actus",
+  social: "Reddit",
+  leverage: "Levier",
   discord: "Discord",
 };
 
@@ -109,9 +149,11 @@ export const SOURCE_CLS: Record<IntelSource, string> = {
   derivatives: "bg-orange-500/15 text-orange-300",
   dex: "bg-violet-500/15 text-violet-300",
   news: "bg-cyan-500/15 text-cyan-300",
+  social: "bg-rose-500/15 text-rose-300",
+  leverage: "bg-amber-500/20 text-amber-200",
 };
 
-export const ALL_SOURCES: IntelSource[] = ["binance", "coinbase", "coingecko", "trending", "derivatives", "dex", "news"];
+export const ALL_SOURCES: IntelSource[] = ["binance", "coinbase", "coingecko", "trending", "derivatives", "dex", "news", "social", "leverage"];
 
 export const dirCls = (d: Direction) => (d === "bullish" ? "text-emerald-400" : d === "bearish" ? "text-rose-400" : "text-slate-400");
 export const dirIcon = (d: Direction) => (d === "bullish" ? "▲" : d === "bearish" ? "▼" : "•");
@@ -155,6 +197,12 @@ const METRIC_LABEL: Record<string, string> = {
   buys1h: "achats 1 h",
   sells1h: "ventes 1 h",
   poolAgeHours: "âge pool",
+  takerBuyPct: "achats agressifs %",
+  vol5m: "volatilité 5 min",
+  liquidatedUsd5m: "liquidé 5 min",
+  mentions1h: "mentions 1 h",
+  maxLeverage: "levier max",
+  score: "score",
   rank: "rang",
   trendingRank: "tendance #",
   athChangePct: "vs record",

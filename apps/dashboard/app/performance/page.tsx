@@ -15,16 +15,30 @@ export default function PerformancePage() {
   const [data, setData] = useState<PerformanceResponse | null>(null);
   const [minStrength, setMinStrength] = useState(0);
   const [source, setSource] = useState<"" | IntelSource>("");
+  const [scope, setScope] = useState<"bot" | "local">("bot");
+  const [relative, setRelative] = useState(true);
+  const [err, setErr] = useState<string | null>(null);
 
   useEffect(() => {
     const p = new URLSearchParams();
     if (minStrength) p.set("minStrength", String(minStrength));
     if (source) p.set("source", source);
-    const load = () => getJson<PerformanceResponse>(`/api/intel/performance?${p}`).then(setData, () => {});
+    if (scope === "bot") p.set("scope", "bot");
+    const load = () =>
+      getJson<PerformanceResponse>(`/api/intel/performance?${p}`).then(
+        (r) => {
+          setData(r);
+          setErr(null);
+        },
+        (e: Error) => {
+          setErr(e.message);
+          if (scope === "bot") setScope("local");
+        },
+      );
     void load();
     const t = setInterval(load, 30_000);
     return () => clearInterval(t);
-  }, [minStrength, source]);
+  }, [minStrength, source, scope]);
 
   const horizons = (data?.horizonsMin ?? [15, 60, 240, 1440]).map(String);
   const now = Date.now();
@@ -36,6 +50,23 @@ export default function PerformancePage() {
           <strong>{data?.hitThresholdPct ?? 2} %</strong> dans le sens annoncé (hausse pour un signal haussier, baisse pour un baissier). C&apos;est la seule façon honnête de savoir quels signaux valent quelque chose : juge
           sur plusieurs jours et au moins ~30 mesures.
         </p>
+        <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
+          {(
+            [
+              ["bot", "Bot 24 h/24"],
+              ["local", "Ce navigateur"],
+            ] as const
+          ).map(([k, l]) => (
+            <button key={k} onClick={() => setScope(k)} className={`rounded px-2.5 py-1 font-semibold ${scope === k ? "bg-slate-700 text-white" : "bg-slate-800 text-slate-400"}`}>
+              {l}
+            </button>
+          ))}
+          <label className="ml-2 flex items-center gap-1.5 text-slate-300" title="Retire l'effet du marché : un +3 % quand le Bitcoin fait +5 % compte comme −2 %">
+            <input type="checkbox" checked={relative} onChange={(e) => setRelative(e.target.checked)} /> mesurer par rapport au Bitcoin
+          </label>
+        </div>
+        {err && <p className="mt-2 text-xs text-amber-300">Bot : {err} — affichage des mesures de ce navigateur.</p>}
+        {scope === "bot" && minStrength + (source ? 1 : 0) > 0 && <p className="mt-1 text-[11px] text-slate-500">Les filtres force / source s&apos;appliquent aux mesures de ce navigateur ; le bot renvoie toutes ses mesures.</p>}
         <div className="mt-3 flex flex-wrap items-center gap-3 text-xs">
           <label className="flex items-center gap-2 text-slate-400">
             Force ≥ <input type="range" min={0} max={95} step={5} value={minStrength} onChange={(e) => setMinStrength(Number(e.target.value))} />
@@ -76,14 +107,17 @@ export default function PerformancePage() {
                 <td className="px-2 py-1.5 text-right">{s.count}</td>
                 {horizons.map((h) => {
                   const x = s.horizons[h];
-                  const hr = x?.hitRatePct ?? null;
+                  const rel = relative && (x?.excessN ?? 0) > 0;
+                  const hr = (rel ? x?.excessHitRatePct : x?.hitRatePct) ?? null;
+                  const n = rel ? (x?.excessN ?? 0) : (x?.n ?? 0);
+                  const avg = rel ? x?.excessAvgPct : x?.avgPct;
                   return [
-                    <td key={`${h}a`} className={`px-2 py-1.5 text-right ${hr === null ? "text-slate-500" : hr >= 55 ? "font-bold text-emerald-400" : hr >= 40 ? "text-amber-300" : "text-rose-400"}`} title={`${x?.n ?? 0} mesure(s)`}>
+                    <td key={`${h}a`} className={`px-2 py-1.5 text-right ${hr === null ? "text-slate-500" : hr >= 55 ? "font-bold text-emerald-400" : hr >= 40 ? "text-amber-300" : "text-rose-400"}`} title={`${n} mesure(s)${rel ? " — par rapport au Bitcoin" : ""}`}>
                       {hr === null ? "—" : `${hr.toFixed(0)} %`}
-                      <span className="text-[10px] text-slate-500"> n={x?.n ?? 0}</span>
+                      <span className="text-[10px] text-slate-500"> n={n}</span>
                     </td>,
-                    <td key={`${h}b`} className={`px-2 py-1.5 text-right ${tone(x?.avgPct)}`}>
-                      {pc(x?.avgPct)}
+                    <td key={`${h}b`} className={`px-2 py-1.5 text-right ${tone(avg)}`}>
+                      {pc(avg)}
                     </td>,
                   ];
                 })}

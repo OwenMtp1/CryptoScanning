@@ -18,6 +18,10 @@ export const IntelConfigSchema = z.object({
       volumeSurgeRatio: pct.default(4),
       /** Ignore pairs with less 24 h quote volume than this (USD). */
       minVolume24hUsd: nonNeg.default(200_000),
+      /** A move must be this many times the coin's usual 5-min move (per-coin thresholds). */
+      volatilityMultiple: pct.default(4),
+      /** Per-coin thresholds never go below this share of the fixed thresholds. */
+      minThresholdFactor: pct.default(0.5),
     })
     .prefault({}),
   coingecko: z
@@ -79,6 +83,20 @@ export const IntelConfigSchema = z.object({
       /** A signal is a "hit" when price moved at least this much in its direction. */
       hitThresholdPct: pct.default(2),
       maxTracked: z.number().int().positive().default(20_000),
+    })
+    .prefault({}),
+  social: z
+    .object({
+      minMentions1h: z.number().int().positive().default(5),
+      ratio: pct.default(3),
+    })
+    .prefault({}),
+  leverage: z
+    .object({
+      /** |score| from which a LONG / SHORT setup becomes a signal. */
+      signalScore: z.number().min(1).max(100).default(40),
+      /** Liquidations of one side in 5 min (USD) that make a signal. */
+      liquidationUsd5m: nonNeg.default(500_000),
     })
     .prefault({}),
   /** Same coin × kind is not re-emitted within this delay. */

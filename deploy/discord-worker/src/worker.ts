@@ -35,6 +35,9 @@ import {
   type IntelSignal,
   type IntelSource,
   type Product,
+  type Candidate,
+  type Direction,
+  parsePerps,
 } from "../../../packages/core/src/index";
 import { DiscordNotifier } from "../../../apps/server/src/intel/discord-notifier";
 import { fetchText } from "../../../apps/server/src/intel/http";
@@ -51,6 +54,8 @@ interface Env {
   DISCORD_ROLE_ID?: string;
   /** Secret shared with the site owner's browser to relay the site's signals. */
   RELAY_KEY?: string;
+  /** Optional: channel for leveraged markets (long / short setups, liquidations). */
+  DISCORD_WEBHOOK_LEVERAGE?: string;
 }
 interface Storage {
   get<T>(key: string): Promise<T | undefined>;
@@ -66,11 +71,73 @@ const FAST_MS = 20_000;
 /** Name of the live instance. An older instance (e.g. before the move to Europe) stops its own loop. */
 const ACTIVE = "eu-1";
 const FULL_MS = 5 * 60_000;
-const KINDS = new Set<IntelKind>(["PUMP_EARLY", "DUMP_EARLY", "VOLUME_SURGE", "BREAKOUT_24H_HIGH", "BREAKDOWN_24H_LOW", "TOP_MOVER_1H", "CRASH_1H", "VOLUME_MCAP_ANOMALY", "NEAR_ATH", "TRENDING_ENTRY", "FUNDING_EXTREME_LONG", "FUNDING_EXTREME_SHORT", "OPEN_INTEREST_SURGE", "DEX_NEW_POOL_TRACTION", "DEX_TRENDING_PUMP", "DEX_RUG_RISK", "NEWS_BULLISH", "NEWS_BEARISH", "CONFLUENCE"]);
-const SOURCES = new Set<IntelSource>(["coinbase", "binance", "coingecko", "trending", "derivatives", "dex", "news"]);
+export const ALL_KINDS: IntelKind[] = ["PUMP_EARLY", "DUMP_EARLY", "VOLUME_SURGE", "BREAKOUT_24H_HIGH", "BREAKDOWN_24H_LOW", "TOP_MOVER_1H", "CRASH_1H", "VOLUME_MCAP_ANOMALY", "NEAR_ATH", "TRENDING_ENTRY", "FUNDING_EXTREME_LONG", "FUNDING_EXTREME_SHORT", "OPEN_INTEREST_SURGE", "DEX_NEW_POOL_TRACTION", "DEX_TRENDING_PUMP", "DEX_RUG_RISK", "NEWS_BULLISH", "NEWS_BEARISH", "NEW_LISTING", "LIQUIDATIONS_LONG", "LIQUIDATIONS_SHORT", "SOCIAL_BUZZ", "LEVERAGE_LONG", "LEVERAGE_SHORT", "CONFLUENCE"];
+export const ALL_SOURCES: IntelSource[] = ["coinbase", "binance", "coingecko", "trending", "derivatives", "dex", "news", "social", "leverage"];
+const KINDS = new Set<IntelKind>(ALL_KINDS);
+const SOURCES = new Set<IntelSource>(ALL_SOURCES);
+/** Kinds that go to the leverage channel when it exists. */
+const LEVERAGE_KINDS = new Set<IntelKind>(["LEVERAGE_LONG", "LEVERAGE_SHORT", "LIQUIDATIONS_LONG", "LIQUIDATIONS_SHORT"]);
+const LISTING_QUOTES = ["USDT", "USDC", "FDUSD"];
+
+/** What goes to Discord — set from the site's Discord panel. */
+export interface DiscordPrefs {
+  enabled: boolean;
+  minStrength: number;
+  /** Only these kinds (empty = all). */
+  kinds: string[];
+  /** Only these sources (empty = all). */
+  sources: string[];
+  directions: Direction[];
+  /** Only these coins (empty = all). */
+  includeCoins: string[];
+  excludeCoins: string[];
+  /** Minimum measured 1 h reliability of the signal type (%), or null. Types not measured yet always pass. */
+  minHitRate: number | null;
+  updatedAt: number | null;
+}
+
+export function defaultPrefs(minStrength = 0): DiscordPrefs {
+  return { enabled: true, minStrength, kinds: [], sources: [], directions: ["bullish", "bearish", "neutral"], includeCoins: [], excludeCoins: [], minHitRate: null, updatedAt: null };
+}
+
+/** Validate prefs sent by the site (strict, bounded). */
+export function sanitizePrefs(x: unknown, now: number): DiscordPrefs | null {
+  if (!x || typeof x !== "object") return null;
+  const o = x as Record<string, unknown>;
+  const list = (v: unknown, ok: (s: string) => boolean, max = 60) => (Array.isArray(v) ? [...new Set(v.filter((e): e is string => typeof e === "string" && ok(e)))].slice(0, max) : []);
+  const coin = (c: string) => /^[A-Z0-9._-]{1,20}$/.test(c);
+  const ms = Number(o.minStrength);
+  const hr = o.minHitRate === null || o.minHitRate === undefined || o.minHitRate === "" ? null : Number(o.minHitRate);
+  if (!Number.isFinite(ms) || ms < 0 || ms > 100) return null;
+  if (hr !== null && (!Number.isFinite(hr) || hr < 0 || hr > 100)) return null;
+  const dirs = list(o.directions, (d) => d === "bullish" || d === "bearish" || d === "neutral") as Direction[];
+  return {
+    enabled: o.enabled !== false,
+    minStrength: Math.round(ms),
+    kinds: list(o.kinds, (k) => KINDS.has(k as IntelKind)),
+    sources: list(o.sources, (k) => SOURCES.has(k as IntelSource)),
+    directions: dirs.length ? dirs : ["bullish", "bearish", "neutral"],
+    includeCoins: list((o.includeCoins as unknown[] | undefined)?.map((c) => String(c).trim().toUpperCase()), coin, 200),
+    excludeCoins: list((o.excludeCoins as unknown[] | undefined)?.map((c) => String(c).trim().toUpperCase()), coin, 200),
+    minHitRate: hr,
+    updatedAt: now,
+  };
+}
+
+export function passesPrefs(p: DiscordPrefs, s: IntelSignal, hitRate: number | null): boolean {
+  if (!p.enabled) return false;
+  if (s.strength < p.minStrength) return false;
+  if (p.kinds.length && !p.kinds.includes(s.kind)) return false;
+  if (p.sources.length && !p.sources.includes(s.source)) return false;
+  if (!p.directions.includes(s.direction)) return false;
+  if (p.includeCoins.length && !p.includeCoins.includes(s.coin)) return false;
+  if (p.excludeCoins.includes(s.coin)) return false;
+  if (p.minHitRate !== null && hitRate !== null && hitRate < p.minHitRate) return false;
+  return true;
+}
 
 interface Channel {
-  id: "bullish" | "bearish" | "general";
+  id: "bullish" | "bearish" | "general" | "leverage";
   label: string;
   directions: ("bullish" | "bearish" | "neutral")[];
   n: DiscordNotifier;
@@ -82,6 +149,8 @@ interface Status {
   durationMs: number;
   loop: string;
   signals24h: number;
+  filteredByPrefs?: number;
+  market?: unknown;
   sources: Record<string, string>;
   errors: string[];
   relay: { configured: boolean; received: number; lastAt: number | null };
@@ -130,6 +199,11 @@ export class RadarState {
     coinbaseBackoffUntil: number;
     /** coin:kind → last sent (shared by the bot's own signals and the site's relayed ones). */
     seen: Map<string, number>;
+    prefs: DiscordPrefs;
+    listings: { cb: Set<string>; cbCoins: Set<string>; bn: Set<string>; seededCb: boolean; seededBn: boolean };
+    lsBackoffUntil: number;
+    flow: Map<string, number>;
+    filtered: number;
     channels: Channel[];
     warm: boolean;
     welcomed: Set<string>;
@@ -169,6 +243,35 @@ export class RadarState {
       }
       return Response.json(await this.run(() => this.relay(body)));
     }
+    if (path === "/prefs") {
+      if (req.method === "POST") {
+        const key = this.env.RELAY_KEY?.trim();
+        if (!key) return Response.json({ ok: false, error: "RELAY_KEY non configurée sur le worker" }, { status: 503 });
+        if (!sameSecret(req.headers.get("x-relay-key") ?? "", key)) return Response.json({ ok: false, error: "code de relais incorrect" }, { status: 401 });
+        const p = sanitizePrefs(await req.json().catch(() => null), Date.now());
+        if (!p) return Response.json({ ok: false, error: "réglages invalides" }, { status: 400 });
+        return Response.json(
+          await this.run(async () => {
+            const L = await this.load();
+            L.prefs = p;
+            await this.state.storage.put({ prefs: p });
+            return { ok: true, prefs: p };
+          }),
+        );
+      }
+      const L = await this.run(() => this.load());
+      return Response.json({ prefs: L.prefs, kinds: ALL_KINDS, sources: ALL_SOURCES, channels: L.channels.map((c) => ({ id: c.id, label: c.label, directions: c.directions, active: c.n.active })) });
+    }
+    if (path === "/stats") {
+      const L = await this.run(() => this.load());
+      return Response.json(L.svc.performance({}));
+    }
+    if (path === "/signals") {
+      const since = Number(new URL(req.url).searchParams.get("since") ?? 0) || Date.now() - 3 * 3_600_000;
+      const L = await this.run(() => this.load());
+      return Response.json({ signals: L.svc.engine.recentSignals({ since, limit: 400 }).map((x) => ({ ...x, hitRate1h: L.svc.hitRateOf(x) })) });
+    }
+    if (path === "/leverage") return Response.json((await this.state.storage.get("leverageBoard")) ?? { at: null, markets: [], context: null });
     return Response.json((await this.state.storage.get<Status>("status")) ?? { message: "Aucune analyse pour l'instant : la première a lieu dans les 5 minutes suivant le déploiement." });
   }
 
@@ -199,14 +302,17 @@ export class RadarState {
     });
     const meta = (await st.get<{ warm?: boolean; welcomed?: string[]; lastFullRunAt?: number; relay?: { received: number; lastAt: number | null }; sentLog?: number[]; seen?: Record<string, number> }>("meta")) ?? {};
 
-    // Channel routing: one webhook per direction when configured, the general webhook for the rest.
+    // Channel routing: one webhook per direction when configured, the general webhook for the rest,
+    // and an optional leverage channel that takes the leveraged-market kinds.
     const bull = env.DISCORD_WEBHOOK_BULLISH?.trim() || null;
     const bear = env.DISCORD_WEBHOOK_BEARISH?.trim() || null;
     const general = env.DISCORD_WEBHOOK_URL?.trim() || null;
+    const lev = env.DISCORD_WEBHOOK_LEVERAGE?.trim() || null;
     const specs: { id: Channel["id"]; label: string; url: string | null; directions: Channel["directions"] }[] = [
       { id: "bullish", label: "haussier", url: bull, directions: ["bullish"] },
       { id: "bearish", label: "baissier", url: bear, directions: ["bearish"] },
       { id: "general", label: "général", url: general, directions: cfg.discord.directions.filter((d) => !(d === "bullish" && bull) && !(d === "bearish" && bear)) },
+      { id: "leverage", label: "levier", url: lev, directions: ["bullish", "bearish", "neutral"] },
     ];
     const savedDiscord = ((await st.get<Record<string, unknown>>("discord")) ?? {}) as Record<string, unknown>;
     const errorsSink = (label: string) => (e: { level: string; message: string }) => {
@@ -215,7 +321,7 @@ export class RadarState {
     const channels: Channel[] = specs
       .filter((c) => c.url && c.directions.length)
       .map((c) => {
-        const n = new DiscordNotifier({ webhookUrl: c.url, cfg: { ...cfg.discord, directions: c.directions }, fetchText, log: errorsSink(c.label), hitRateOf: () => null, now: () => this.clock });
+        const n = new DiscordNotifier({ webhookUrl: c.url, cfg: { ...cfg.discord, directions: c.directions }, fetchText, log: errorsSink(c.label), hitRateOf: (s) => this.loaded?.svc.hitRateOf(s) ?? null, now: () => this.clock });
         // Old single-channel state (v1) belongs to the general channel.
         n.importState((savedDiscord[c.id] ?? (c.id === "general" && "lastCoinAt" in savedDiscord ? savedDiscord : undefined)) as never);
         return { id: c.id, label: c.label, directions: c.directions, n };
@@ -229,6 +335,13 @@ export class RadarState {
       binanceBackoffUntil: 0,
       coinbaseBackoffUntil: 0,
       seen: new Map(Object.entries(meta.seen ?? {})),
+      prefs: (await st.get<DiscordPrefs>("prefs")) ?? defaultPrefs(cfg.discord.minStrength),
+      listings: (() => {
+        return { cb: new Set<string>(), cbCoins: new Set<string>(), bn: new Set<string>(), seededCb: false, seededBn: false };
+      })(),
+      lsBackoffUntil: 0,
+      flow: new Map<string, number>(),
+      filtered: 0,
       warm: !!meta.warm,
       welcomed: new Set(meta.welcomed ?? []),
       lastFullRunAt: meta.lastFullRunAt ?? null,
@@ -247,10 +360,13 @@ export class RadarState {
         },
         view: () => channels[0]?.n.view() ?? null,
       },
-      enabledSources: ["binance", "coinbase", "coingecko", "trending", "derivatives", "dex", "news"],
+      enabledSources: ["binance", "coinbase", "coingecko", "trending", "derivatives", "dex", "news", "social", "leverage"],
       now: () => this.clock,
     });
     loaded.svc.restore(await st.get<IntelSavedState>("intel"));
+    loaded.svc.tracker.importState((await st.get<never[]>("tracker")) ?? []);
+    const li = await st.get<{ cb: string[]; cbCoins: string[]; bn: string[]; seededCb: boolean; seededBn: boolean }>("listings");
+    if (li) loaded.listings = { cb: new Set(li.cb), cbCoins: new Set(li.cbCoins), bn: new Set(li.bn), seededCb: li.seededCb, seededBn: li.seededBn };
     this.loaded = loaded;
     return loaded;
   }
@@ -268,9 +384,54 @@ export class RadarState {
     const last = L.seen.get(key);
     if (last !== undefined && this.clock - last < 30 * 60_000) return;
     L.seen.set(key, this.clock);
+    if (!passesPrefs(L.prefs, s, L.svc.hitRateOf(s))) {
+      L.filtered++;
+      return;
+    }
     this.signalsThisRun++;
     L.sentLog.push(this.clock);
-    for (const c of L.channels) c.n.consider(s);
+    const lev = L.channels.find((c) => c.id === "leverage");
+    const targets = lev && LEVERAGE_KINDS.has(s.kind) ? [lev] : L.channels.filter((c) => c.id !== "leverage");
+    for (const c of targets) c.n.consider(s);
+  }
+
+  /** New pairs / coins compared with everything seen before (the first pass only learns). */
+  private listingCandidates(exchange: "coinbase" | "binance", pairs: { pair: string; coin: string }[]): Candidate[] {
+    const L = this.loaded as NonNullable<RadarState["loaded"]>;
+    const known = exchange === "coinbase" ? L.listings.cb : L.listings.bn;
+    const seeded = exchange === "coinbase" ? L.listings.seededCb : L.listings.seededBn;
+    const coinsBefore = exchange === "coinbase" ? new Set(L.listings.cbCoins) : new Set([...L.listings.bn].map((p) => this.baseOf(p)));
+    const out: Candidate[] = [];
+    for (const { pair, coin } of pairs) {
+      if (known.has(pair)) continue;
+      known.add(pair);
+      if (exchange === "coinbase") L.listings.cbCoins.add(coin);
+      if (!seeded) continue;
+      const newCoin = !coinsBefore.has(coin);
+      coinsBefore.add(coin);
+      const where = exchange === "coinbase" ? "Coinbase" : "Binance";
+      out.push({
+        coin,
+        coinName: null,
+        kind: "NEW_LISTING",
+        direction: "bullish",
+        source: exchange,
+        strength: newCoin ? 85 : 55,
+        title: newCoin ? `🆕 ${coin} arrive sur ${where} (${pair})` : `${coin} : nouvelle paire ${pair} sur ${where}`,
+        reasons: newCoin ? [`nouvelle crypto cotée sur ${where}`, "une cotation sur une grande plateforme provoque souvent une forte hausse… et parfois une chute juste après", "vérifie le projet avant tout achat"] : [`nouvelle paire de cotation sur ${where}`, "plus de liquidité et d'accès pour cette crypto"],
+        metrics: { pair, exchange: where },
+        priceUsd: null,
+        url: exchange === "coinbase" ? `https://www.coinbase.com/advanced-trade/spot/${pair}` : `https://www.binance.com/en/trade/${pair}`,
+      });
+    }
+    if (exchange === "coinbase") L.listings.seededCb = true;
+    else L.listings.seededBn = true;
+    return out;
+  }
+
+  private baseOf(symbol: string): string {
+    const q = LISTING_QUOTES.find((x) => symbol.endsWith(x) && symbol.length > x.length);
+    return q ? symbol.slice(0, -q.length) : symbol;
   }
 
   private async get(label: string, url: string): Promise<string | null> {
@@ -325,7 +486,27 @@ export class RadarState {
       if (text) {
         const tickers = arr<BinanceMiniRestTicker>(text, BinanceMiniRestTickerSchema);
         if (tickers.length) {
-          svc.onBinanceTickers(tickers, L.binance, now);
+          // Buy / sell flow for the coins that are moving (klines 1 min: taker-buy share of the volume).
+          const movers = L.binance
+            .preview(tickers, now)
+            .filter((x) => Math.abs(x.change5m ?? 0) >= L.cfg.binance.pumpPct5m * 0.5 || Math.abs(x.change15m ?? 0) >= L.cfg.binance.pumpPct15m * 0.5)
+            .sort((a, b) => Math.abs(b.change5m ?? 0) - Math.abs(a.change5m ?? 0))
+            .slice(0, 8);
+          for (const m of movers) {
+            const k = await this.get(`Flux ${m.pair}`, `https://data-api.binance.vision/api/v3/klines?symbol=${m.pair}&interval=1m&limit=5`);
+            if (!k) continue;
+            try {
+              const rows = JSON.parse(k) as unknown[][];
+              const q = rows.reduce((a, r) => a + Number(r[7]), 0);
+              const tb = rows.reduce((a, r) => a + Number(r[10]), 0);
+              if (q > 0 && Number.isFinite(tb)) L.flow.set(m.coin, tb / q);
+            } catch {
+              // ignore a malformed answer
+            }
+          }
+          svc.onBinanceTickers(tickers, L.binance, now, L.flow);
+          const pairs = tickers.map((t) => ({ pair: t.symbol, coin: this.baseOf(t.symbol) })).filter((x) => x.coin !== x.pair);
+          svc.ingestExternal(this.listingCandidates("binance", pairs), now);
           sources.binance = `${L.binance.pick(tickers, now).length} cryptos`;
         }
       } else if (this.errors.some((e) => /^Binance : HTTP (451|403)/.test(e))) {
@@ -341,6 +522,8 @@ export class RadarState {
         const products: Product[] = parseProductsPage(JSON.parse(text)).products;
         if (products.length) {
           svc.onCoinbaseProducts(products, L.history, now);
+          const online = products.filter((p) => p.status === "online" && !p.flags.tradingDisabled);
+          svc.ingestExternal(this.listingCandidates("coinbase", online.map((p) => ({ pair: p.productId, coin: p.baseCurrency }))), now);
           sources.coinbase = `${CoinbasePriceHistory.pick(products).length} cryptos`;
         }
       } else L.coinbaseBackoffUntil = now + (this.errors.some((e) => e.startsWith("Coinbase : HTTP 429")) ? 90_000 : 40_000);
@@ -376,15 +559,49 @@ export class RadarState {
           const xml = await this.get(`Actu ${f.name}`, `${site}/api/news/${encodeURIComponent(f.id)}`);
           const parsed = xml ? parseFeed(xml) : [];
           items += parsed.length;
-          if (parsed.length) svc.onNews(f.name, parsed, now);
+          if (!parsed.length) continue;
+          if ((f as { kind?: string }).kind === "social") svc.onSocial(f.name, parsed, now);
+          else svc.onNews(f.name, parsed, now);
         }
       }
       sources.news = `${items} articles`;
     }
     if (full) {
+      // 5. Leveraged markets: Coinbase perpetual contracts (+ Binance long/short ratio for the biggest).
+      const perpText = await this.get("Coinbase perpétuels", "https://api.coinbase.com/api/v3/brokerage/market/products?product_type=FUTURE&contract_expiry_type=PERPETUAL");
+      if (perpText) {
+        const markets = parsePerps(JSON.parse(perpText));
+        const extras = new Map<string, { takerBuyRatio?: number | null; longShortRatio?: number | null }>();
+        for (const m of markets) extras.set(m.coin, { takerBuyRatio: L.flow.get(m.coin) ?? null });
+        if (now >= L.lsBackoffUntil) {
+          const top = [...new Set(markets.sort((a, b) => (b.volume24hUsd ?? 0) - (a.volume24hUsd ?? 0)).map((m) => m.coin))].slice(0, 15);
+          for (const coin of top) {
+            const t = await this.get(`Long/short ${coin}`, `https://fapi.binance.com/futures/data/globalLongShortAccountRatio?symbol=${coin}USDT&period=5m&limit=1`);
+            if (!t) {
+              if (this.errors.some((e) => /^Long\/short .* HTTP (451|403)/.test(e))) {
+                L.lsBackoffUntil = now + 30 * 60_000;
+                break;
+              }
+              continue;
+            }
+            try {
+              const r = (JSON.parse(t) as { longShortRatio?: string }[])[0];
+              const v = Number(r?.longShortRatio);
+              if (Number.isFinite(v)) extras.set(coin, { ...extras.get(coin), longShortRatio: v });
+            } catch {
+              // ignore
+            }
+          }
+          // A missing futures listing (400) is normal for small coins: keep only real problems visible.
+          this.errors = this.errors.filter((e) => !/^Long\/short .* HTTP (400|404)/.test(e));
+        }
+        svc.onPerps(markets, extras, now);
+        sources.leverage = `${markets.length} marchés perpétuels`;
+      }
       L.lastFullRunAt = now;
       L.warm = true; // after the first full pass, alerts are live
     }
+    svc.tickOutcomes(now);
 
     await this.flushDiscord();
     const status = await this.save(t0, sources, full);
@@ -404,6 +621,7 @@ export class RadarState {
       const s = sanitizeRelayed(x, this.clock);
       if (!s) continue;
       accepted++;
+      L.svc.tracker.track(s, L.svc.engine.priceOf("BTC"));
       if (!L.warm) continue;
       this.dispatch(s);
     }
@@ -430,7 +648,9 @@ export class RadarState {
       if (!L.welcomed.has(c.id)) {
         // New channel: a hello message instead of a burst of alerts.
         const note =
-          c.id === "bullish"
+          c.id === "leverage"
+            ? "⚖️ Ce salon reçoit les **marchés à levier** : indications long / short et liquidations en cascade. Le levier amplifie les pertes."
+            : c.id === "bullish"
             ? "🟢 Ce salon reçoit les signaux **haussiers** (cryptos qui pourraient exploser)."
             : c.id === "bearish"
               ? "🔴 Ce salon reçoit les signaux **baissiers** (cryptos qui pourraient chuter)."
@@ -463,6 +683,8 @@ export class RadarState {
       durationMs: Date.now() - t0,
       loop: `prix Binance et Coinbase toutes les ${FAST_MS / 1000} s, autres sources toutes les ${FULL_MS / 60_000} min, une notification Discord par signal`,
       signals24h: L.sentLog.filter((t) => t > this.clock - 86_400_000).length,
+      filteredByPrefs: L.filtered,
+      market: L.svc.marketContext(),
       // Keep the detail of the last full pass visible between fast runs.
       sources: full ? sources : { ...(prev?.sources ?? {}), ...sources },
       errors: (full ? this.errors : [...this.errors, ...(prev?.errors ?? []).filter((e) => !e.startsWith("Coinbase") && !e.startsWith("Discord"))]).slice(0, 20),
@@ -470,7 +692,10 @@ export class RadarState {
       config: { siteUrl: (this.env.SITE_URL ?? "").trim() || null, webhookConfigured: L.channels.some((c) => c.n.active), minStrength: L.cfg.discord.minStrength },
       discord: this.discordView(L),
     };
-    const entries: Record<string, unknown> = { cb: L.history.export(), bn: L.binance.export(), discord: Object.fromEntries(L.channels.map((c) => [c.id, c.n.exportState()])), meta: this.meta(L), status };
+    const entries: Record<string, unknown> = {
+      listings: { cb: [...L.listings.cb], cbCoins: [...L.listings.cbCoins], bn: [...L.listings.bn], seededCb: L.listings.seededCb, seededBn: L.listings.seededBn },
+      cb: L.history.export(),
+      bn: L.binance.export(), discord: Object.fromEntries(L.channels.map((c) => [c.id, c.n.exportState()])), meta: this.meta(L), status };
     if (full) {
       // Compact: the worker needs cooldowns and recent signals, not full history.
       const intel = L.svc.exportState();
@@ -479,6 +704,8 @@ export class RadarState {
       intel.engine.news = intel.engine.news.slice(-500).map((n) => ({ ...n, summary: "" }));
       intel.tracker = [];
       entries.intel = intel;
+      entries.tracker = L.svc.tracker.exportRecent(3000);
+      entries.leverageBoard = L.svc.leverage();
     } else {
       // Fast runs only persist cooldowns + recent signals (small).
       const e = L.svc.engine.exportState();
@@ -527,6 +754,13 @@ export default {
       const len = Number(req.headers.get("content-length") ?? 0);
       if (len > 64_000) return Response.json({ ok: false, error: "trop gros" }, { status: 413 });
       return stub(env).fetch("https://radar/relay", { method: "POST", headers: { "x-relay-key": req.headers.get("x-relay-key") ?? "", "content-type": "application/json" }, body: await req.text() });
+    }
+    if (req.method === "POST" && url.pathname === "/prefs") {
+      return stub(env).fetch("https://radar/prefs", { method: "POST", headers: { "x-relay-key": req.headers.get("x-relay-key") ?? "", "content-type": "application/json" }, body: (await req.text()).slice(0, 32_000) });
+    }
+    if (req.method === "GET" && ["/prefs", "/stats", "/signals", "/leverage"].includes(url.pathname)) {
+      const r = await stub(env).fetch(`https://radar${url.pathname}${url.search}`);
+      return new Response(r.body, { status: r.status, headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" } });
     }
     // Public read-only status page (no secret in it).
     const r = await stub(env).fetch("https://radar/status");

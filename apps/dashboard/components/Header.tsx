@@ -10,6 +10,7 @@ const NAV = [
   { href: "/", label: "Flux" },
   { href: "/univers", label: "Univers" },
   { href: "/performance", label: "Performance" },
+  { href: "/levier", label: "Levier" },
   { href: "/sources", label: "Sources" },
   { href: "/radar", label: "Radar Coinbase" },
   { href: "/opportunities", label: "Opportunités" },

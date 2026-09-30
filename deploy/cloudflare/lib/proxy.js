@@ -15,6 +15,11 @@ export const FEEDS = [
   // CryptoSlate removed: it refuses requests coming from Cloudflare servers (HTTP 403).
   { id: "cryptoast", name: "Cryptoast", url: "https://cryptoast.fr/feed/", lang: "fr" },
   { id: "journalducoin", name: "Journal du Coin", url: "https://journalducoin.com/feed/", lang: "fr" },
+  // Social: new Reddit posts (attention per coin). Reddit may refuse Cloudflare servers; the page Sources says so.
+  { id: "reddit-cryptocurrency", name: "r/CryptoCurrency", url: "https://www.reddit.com/r/CryptoCurrency/new/.rss", lang: "en", kind: "social" },
+  { id: "reddit-moonshots", name: "r/CryptoMoonShots", url: "https://www.reddit.com/r/CryptoMoonShots/new/.rss", lang: "en", kind: "social" },
+  { id: "reddit-satoshistreetbets", name: "r/SatoshiStreetBets", url: "https://www.reddit.com/r/SatoshiStreetBets/new/.rss", lang: "en", kind: "social" },
+  { id: "reddit-altcoin", name: "r/altcoin", url: "https://www.reddit.com/r/altcoin/new/.rss", lang: "en", kind: "social" },
 ];
 
 export const json = (body, status = 200, maxAge = 0) =>

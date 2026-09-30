@@ -18,6 +18,10 @@ export interface TrackedSignal {
   entryPrice: number;
   /** horizon (min) → return in % (null until due, or when no price was available). */
   returns: Record<string, number | null>;
+  /** Benchmark (BTC) price at signal time, to measure the move relative to the market. */
+  benchEntry?: number | null;
+  /** horizon → return minus the benchmark's return, in % (the market effect removed). */
+  excess?: Record<string, number | null>;
   /** Best move in the signal's direction and worst against it, in % (while tracked). */
   mfePct: number;
   maePct: number;
@@ -29,20 +33,23 @@ export interface KindStats {
   direction: Direction;
   count: number;
   /** horizon → { n, hitRatePct, avgReturnPct, medianReturnPct } (returns signed in the signal's direction). */
-  horizons: Record<string, { n: number; hitRatePct: number | null; avgPct: number | null; medianPct: number | null }>;
+  horizons: Record<string, { n: number; hitRatePct: number | null; avgPct: number | null; medianPct: number | null; excessHitRatePct: number | null; excessAvgPct: number | null; excessN: number }>;
   avgMfePct: number | null;
   avgMaePct: number | null;
 }
 
 const signFor = (d: Direction) => (d === "bearish" ? -1 : 1);
+/** The market benchmark: excess returns are measured against Bitcoin. */
+export const BENCHMARK = "BTC";
 
 export class OutcomeTracker {
   private readonly items: TrackedSignal[] = [];
 
   constructor(private cfg: IntelConfig["tracking"]) {}
 
-  track(s: IntelSignal) {
+  track(s: IntelSignal, benchPrice: number | null = null) {
     if (s.priceUsd === null || !(s.priceUsd > 0)) return;
+    if (this.items.some((x) => x.id === s.id)) return;
     this.items.push({
       id: s.id,
       ts: s.ts,
@@ -53,6 +60,8 @@ export class OutcomeTracker {
       strength: s.strength,
       entryPrice: s.priceUsd,
       returns: Object.fromEntries(this.cfg.horizonsMin.map((h) => [String(h), null])),
+      benchEntry: s.coin !== BENCHMARK && benchPrice !== null && benchPrice > 0 ? benchPrice : null,
+      excess: Object.fromEntries(this.cfg.horizonsMin.map((h) => [String(h), null])),
       mfePct: 0,
       maePct: 0,
       done: false,
@@ -77,8 +86,12 @@ export class OutcomeTracker {
         const k = String(h);
         if (it.returns[k] !== null || now < it.ts + h * 60_000) continue;
         // Late by more than 10 % of the horizon (app was off): not measurable.
-        if (p === null || now > it.ts + h * 60_000 * 1.1 + 60_000) it.returns[k] = Number.NaN;
+        const late = p === null || now > it.ts + h * 60_000 * 1.1 + 60_000;
+        if (late) it.returns[k] = Number.NaN;
         else it.returns[k] = ((p - it.entryPrice) / it.entryPrice) * 100;
+        const b = priceOf(BENCHMARK);
+        it.excess ??= {};
+        it.excess[k] = late || !it.benchEntry || b === null || !(b > 0) ? null : (it.returns[k] as number) - ((b - it.benchEntry) / it.benchEntry) * 100;
         completed++;
       }
       if (now >= it.ts + maxH * 60_000 * 1.1 + 60_000) it.done = true;
@@ -109,7 +122,11 @@ export class OutcomeTracker {
         const k = String(h);
         const vals = g.map((it) => it.returns[k]).filter((v): v is number => v !== null && Number.isFinite(v)).map((v) => v * signFor(first.direction));
         const sorted = [...vals].sort((a, b) => a - b);
+        const ex = g.map((it) => it.excess?.[k]).filter((v): v is number => v !== null && v !== undefined && Number.isFinite(v)).map((v) => v * signFor(first.direction));
         horizons[k] = {
+          excessN: ex.length,
+          excessHitRatePct: ex.length ? (ex.filter((v) => v >= hit).length / ex.length) * 100 : null,
+          excessAvgPct: ex.length ? ex.reduce((a, x) => a + x, 0) / ex.length : null,
           n: vals.length,
           hitRatePct: vals.length ? (vals.filter((v) => v >= hit).length / vals.length) * 100 : null,
           avgPct: vals.length ? vals.reduce((s, x) => s + x, 0) / vals.length : null,
@@ -132,6 +149,11 @@ export class OutcomeTracker {
 
   exportState(): TrackedSignal[] {
     return this.items.map((it) => ({ ...it, returns: Object.fromEntries(Object.entries(it.returns).map(([k, v]) => [k, v !== null && Number.isNaN(v) ? -999999 : v])) }));
+  }
+
+  /** Most recent items only (smaller persisted state). */
+  exportRecent(max: number): TrackedSignal[] {
+    return this.exportState().slice(-max);
   }
 
   importState(items: TrackedSignal[]) {

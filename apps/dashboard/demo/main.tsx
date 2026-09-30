@@ -7,6 +7,7 @@ import PerformancePage from "../app/performance/page";
 import RadarPage from "../app/radar/page";
 import SourcesPage from "../app/sources/page";
 import UniversPage from "../app/univers/page";
+import LevierPage from "../app/levier/page";
 import { CoinDrawerProvider } from "../components/Intel";
 import PortfolioPage from "../app/portfolio/page";
 import PositionsPage from "../app/positions/page";
@@ -24,6 +25,7 @@ const ROUTES: Record<string, ComponentType> = {
   "/univers": UniversPage,
   "/performance": PerformancePage,
   "/sources": SourcesPage,
+  "/levier": LevierPage,
   "/radar": RadarPage,
   "/opportunities": OpportunitiesPage,
   "/positions": PositionsPage,

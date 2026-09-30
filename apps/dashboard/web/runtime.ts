@@ -26,7 +26,7 @@ const BINANCE_WS = "wss://data-stream.binance.vision";
 const NEWS_EVERY_MS = 5 * 60_000;
 
 interface NewsListResponse {
-  feeds: { id: string; name: string; url: string; lang: string }[];
+  feeds: { id: string; name: string; url: string; lang: string; kind?: string }[];
 }
 
 /** exchangeInfo straight from Binance, or through our function when the browser call is refused. */
@@ -54,7 +54,7 @@ export async function startWeb(): Promise<DemoBackend> {
   const cfg = IntelConfigSchema.parse({ coingecko: { universeSize: 750 } });
   const log = new BrowserEventLog([], 1500);
   const emit = (e: Parameters<BrowserEventLog["emit"]>[0]) => void log.emit(e);
-  const svc = new IntelService({ cfg, log: emit, notifier: null, enabledSources: ["binance", "coinbase", "coingecko", "trending", "derivatives", "dex", "news", "discord"] });
+  const svc = new IntelService({ cfg, log: emit, notifier: null, enabledSources: ["binance", "coinbase", "coingecko", "trending", "derivatives", "dex", "news", "social", "leverage", "discord"] });
   const saved = load();
   svc.restore(saved);
 
@@ -102,7 +102,8 @@ export async function startWeb(): Promise<DemoBackend> {
           if (x.status !== 200) throw new Error(`HTTP ${x.status}`);
           const items = parseFeed(x.text);
           if (!items.length) throw new Error("flux vide ou illisible");
-          svc.onNews(f.name, items, now);
+          if (f.kind === "social") svc.onSocial(f.name, items, now);
+          else svc.onNews(f.name, items, now);
           if (h) Object.assign(h, { ok: true, lastSuccessAt: now, lastError: null, items: items.length });
         } catch (err) {
           if (h) Object.assign(h, { ok: false, lastError: (err as Error).message });
@@ -198,6 +199,74 @@ export async function startWeb(): Promise<DemoBackend> {
   void pollBot();
   setInterval(() => void pollBot(), 30_000);
 
+  // ── Binance Futures liquidations (live, from the browser). Since 2026 the futures streams are split
+  // by category (/public, /market, /private); the right one for forceOrder is tried first, then the others.
+  const LIQ_URLS = ["wss://fstream.binance.com/market/ws/!forceOrder@arr", "wss://fstream.binance.com/public/ws/!forceOrder@arr", "wss://fstream.binance.com/ws/!forceOrder@arr"];
+  let liqIdx = 0;
+  let liqBuf: { symbol: string; side: "BUY" | "SELL"; usd: number; ts: number }[] = [];
+  const connectLiq = () => {
+    let ws: WebSocket;
+    try {
+      ws = new WebSocket(LIQ_URLS[liqIdx % LIQ_URLS.length] as string);
+    } catch {
+      return;
+    }
+    let got = false;
+    // Liquidations happen every few seconds market-wide: 90 s of silence = wrong endpoint.
+    const silence = setTimeout(() => {
+      if (!got) {
+        liqIdx++;
+        ws.close();
+      }
+    }, 90_000);
+    ws.onmessage = (ev) => {
+      try {
+        const m = JSON.parse(String(ev.data)) as { o?: { s?: string; S?: string; q?: string; ap?: string; p?: string; T?: number } };
+        const o = m.o;
+        if (!o?.s || (o.S !== "BUY" && o.S !== "SELL")) return;
+        const usd = Number(o.q) * Number(o.ap || o.p);
+        if (!Number.isFinite(usd)) return;
+        got = true;
+        liqBuf.push({ symbol: o.s, side: o.S, usd, ts: o.T ?? Date.now() });
+      } catch {
+        // ignore
+      }
+    };
+    ws.onclose = () => {
+      clearTimeout(silence);
+      setTimeout(connectLiq, got ? 5000 : 15_000);
+    };
+  };
+  connectLiq();
+  setInterval(() => {
+    if (!liqBuf.length) return;
+    const b = liqBuf;
+    liqBuf = [];
+    svc.onLiquidations(b);
+  }, 5000);
+
+  // ── The 24/7 bot: its own signals (listings, leverage, Coinbase…) are shown here too.
+  const botGet = async <T>(path: string): Promise<T | null> => {
+    try {
+      const r = await fetchText(path, { timeoutMs: 20_000 });
+      return r.status === 200 ? (JSON.parse(r.text) as T) : null;
+    } catch {
+      return null;
+    }
+  };
+  let botSince = Date.now() - 3 * 3_600_000;
+  const pullBotSignals = async () => {
+    const r = await botGet<{ signals: import("@radar/core").IntelSignal[] }>(`/api/discord/signals?since=${botSince}`);
+    if (!r?.signals?.length) return;
+    // Same event already detected by this page within 30 min → keep one card.
+    const mine = svc.engine.recentSignals({ since: Date.now() - 3 * 3_600_000, limit: 5000 });
+    const fresh = r.signals.filter((b) => !mine.some((m) => m.coin === b.coin && m.kind === b.kind && m.direction === b.direction && Math.abs(m.ts - b.ts) < 30 * 60_000));
+    svc.engine.addExternal(fresh.map((x) => ({ ...x, id: `bot-${x.id}`, reasons: [...x.reasons, "détecté par le bot 24 h/24"] })));
+    botSince = Math.max(botSince, ...r.signals.map((x) => x.ts));
+  };
+  void pullBotSignals();
+  setInterval(() => void pullBotSignals(), 30_000);
+
   const save = () => {
     const st = svc.exportState({ cgLastRun: cg.lastRuns() });
     let keep = 4000;
@@ -240,11 +309,35 @@ export async function startWeb(): Promise<DemoBackend> {
   return {
     async get(path) {
       const u = new URL(path, "https://site.local");
+      // Data owned by the 24/7 bot (leveraged markets, long-term statistics, Discord settings).
+      if (u.pathname === "/api/intel/leverage") return (await botGet("/api/discord/leverage")) ?? { at: null, markets: [], context: svc.marketContext(), unavailable: true };
+      if (u.pathname === "/api/intel/performance" && u.searchParams.get("scope") === "bot") {
+        const r = await botGet("/api/discord/stats");
+        if (!r) throw new Error("statistiques du bot indisponibles (DISCORD_WORKER_URL ?)");
+        return r;
+      }
+      if (u.pathname === "/api/web/prefs") {
+        const r = await botGet("/api/discord/prefs");
+        if (!r) throw new Error("bot injoignable : vérifie DISCORD_WORKER_URL sur le site");
+        return { ...(r as object), keySet: !!readKey() };
+      }
       const r = handleGet(ctx, u.pathname, u.searchParams);
       if (!r || r.status >= 400) throw new Error(`${path} → ${r?.status ?? 404}`);
       return r.body;
     },
     async post(path, body) {
+      if (path === "/api/web/prefs") {
+        const key = readKey();
+        if (!key) return { status: 400, body: { ok: false, error: "entre d'abord ton code de relais (page Sources → carte Discord)" } };
+        const r = await fetchText("/api/discord/prefs", { method: "POST", headers: { "content-type": "application/json", "x-relay-key": key }, body: JSON.stringify(body), timeoutMs: 15_000 });
+        let b: unknown = {};
+        try {
+          b = JSON.parse(r.text);
+        } catch {
+          b = { ok: false, error: `HTTP ${r.status}` };
+        }
+        return { status: r.status, body: b };
+      }
       if (path === "/api/web/relay-key") {
         // Save the relay code in this browser after checking it with the bot (empty batch = no message).
         const key = String((body as { key?: string })?.key ?? "").trim();

@@ -92,6 +92,14 @@ export default function FluxPage() {
           se branche sur Binance, CoinGecko, GeckoTerminal et les flux RSS.
         </div>
       )}
+      {base?.market && base.market.regime !== "inconnu" && (
+        <div
+          className={`rounded border px-3 py-2 text-xs ${base.market.regime === "baisse" ? "border-rose-700/60 bg-rose-950/40 text-rose-100" : base.market.regime === "hausse" ? "border-emerald-700/60 bg-emerald-950/40 text-emerald-100" : "border-slate-700 bg-slate-900/60 text-slate-300"}`}
+        >
+          <strong>Contexte :</strong> {base.market.note}
+          {base.market.regime !== "calme" && " — les signaux qui vont contre le marché sont affaiblis, ceux qui vont dans son sens renforcés."}
+        </div>
+      )}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
         <Card>
           <Stat label="Signaux (1 h)" value={lastHour.length} hint={`${all.length} en mémoire`} />

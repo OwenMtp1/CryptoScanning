@@ -52,7 +52,15 @@ export interface LiveSnapshot {
   volume24hUsd: number;
   high24h: number;
   low24h: number;
+  /** Typical absolute 5-min move of this coin in % (learned over time); null until known. */
+  vol5m?: number | null;
+  /** Share of aggressive BUY volume over the last minutes (0–1), when known. */
+  takerBuyRatio?: number | null;
 }
+
+/** Stablecoins and wrapped / staked copies: their "moves" are noise, never signals. */
+const NOISE = new Set("USDT USDC DAI FDUSD TUSD USDP PYUSD USDE USDS USD1 RLUSD USDD BUSD GUSD FRAX LUSD SUSD EURC EURT EURS AEUR XSGD BIDR IDRT TRYB WBTC WETH WBETH STETH WSTETH CBBTC CBETH RETH WEETH EETH METH SOLVBTC LBTC TBTC BTCB WBNB WSOL JITOSOL MSOL BNSOL XAUT PAXG".split(" "));
+export const isNoiseCoin = (symbol: string) => NOISE.has(symbol.toUpperCase());
 
 export function detectLive(s: LiveSnapshot, cfg: IntelConfig["binance"], source: IntelSource = "binance"): Candidate[] {
   if (s.volume24hUsd < cfg.minVolume24hUsd) return [];
@@ -63,29 +71,76 @@ export function detectLive(s: LiveSnapshot, cfg: IntelConfig["binance"], source:
   const metrics = { pair: s.pair, change5m: s.change5m, change15m: s.change15m, change1h: s.change1h, volumeRatio1h: s.volumeRatio1h, volume24hUsd: s.volume24hUsd };
   const vol = s.volumeRatio1h !== null && s.volumeRatio1h >= 1.5 ? ` avec volume ${s.volumeRatio1h.toFixed(1)}x la moyenne` : "";
 
-  const up = Math.max((s.change5m ?? 0) / cfg.pumpPct5m, (s.change15m ?? 0) / cfg.pumpPct15m);
+  // Thresholds adapted to each coin: a move counts when it is several times the coin's usual
+  // 5-min move (never below half of the fixed threshold). Unknown volatility → fixed thresholds.
+  const usual = s.vol5m && s.vol5m > 0 ? s.vol5m : null;
+  const adapt = (fixed: number, scale: number) => (usual ? Math.max(fixed * cfg.minThresholdFactor, cfg.volatilityMultiple * usual * scale) : fixed);
+  const up5 = adapt(cfg.pumpPct5m, 1);
+  const up15 = adapt(cfg.pumpPct15m, Math.sqrt(3));
+  const dn5 = adapt(cfg.dumpPct5m, 1);
+  const dn15 = adapt(cfg.dumpPct15m, Math.sqrt(3));
+  const volNote = usual ? `seuils adaptés à la volatilité de ${s.coin} (mouvement habituel ${usual.toFixed(2)} % en 5 min)` : null;
+
+  /** Confirmations and warnings that refine a PUMP / DUMP strength. */
+  const refine = (dir: 1 | -1, strength: number, reasons: string[]) => {
+    let k = strength;
+    const c1 = s.change1h;
+    if (c1 !== null && c1 !== undefined) {
+      if (Math.sign(c1) === dir && Math.abs(c1) >= 1) {
+        k += 8;
+        reasons.push(`confirmé sur 5 min, 15 min et 1 h (${f(c1)} % sur 1 h)`);
+      } else if (Math.sign(c1) === -dir && Math.abs(c1) >= 2) {
+        k -= 10;
+        reasons.push(`à contre-sens de la tendance 1 h (${f(c1)} %) : rebond possible`);
+      }
+    }
+    const c5 = s.change5m;
+    const c15 = s.change15m;
+    if (c5 !== null && c15 !== null && Math.abs(c15) >= (dir > 0 ? up15 : dn15) && dir * c5 < dir * c15 * 0.2) {
+      k -= 10;
+      reasons.push("l'élan ralentit : le mouvement des 5 dernières minutes est faible");
+    }
+    const tb = s.takerBuyRatio;
+    if (tb !== null && tb !== undefined) {
+      const aligned = dir > 0 ? tb : 1 - tb;
+      if (aligned >= 0.6) {
+        k += 10;
+        reasons.push(`${dir > 0 ? "acheteurs" : "vendeurs"} agressifs dominants (${(aligned * 100).toFixed(0)} % du volume récent)`);
+      } else if (aligned <= 0.45) {
+        k -= 12;
+        reasons.push(`peu ${dir > 0 ? "d'acheteurs" : "de vendeurs"} agressifs (${(aligned * 100).toFixed(0)} % du volume récent) : mouvement fragile`);
+      }
+    }
+    if (volNote) reasons.push(volNote);
+    return Math.round(clamp(k));
+  };
+  const flowMetrics = { vol5m: usual, takerBuyPct: s.takerBuyRatio !== null && s.takerBuyRatio !== undefined ? Math.round(s.takerBuyRatio * 100) : null };
+
+  const up = Math.max((s.change5m ?? 0) / up5, (s.change15m ?? 0) / up15);
   if (up >= 1) {
     const volBoost = s.volumeRatio1h !== null ? Math.min(1.3, 0.85 + s.volumeRatio1h / 20) : 0.9;
+    const reasons = [`variation 5 min ${f(s.change5m)} % (seuil ${up5.toFixed(1)} %)`, `variation 15 min ${f(s.change15m)} % (seuil ${up15.toFixed(1)} %)`, `volume 24 h ${usd(s.volume24hUsd)} sur ${s.pair}`];
     out.push({
       ...base,
       kind: "PUMP_EARLY",
       direction: "bullish",
-      strength: Math.round(clamp(strengthFromRatio(up) * liq * volBoost)),
+      strength: refine(1, strengthFromRatio(up) * liq * volBoost, reasons),
       title: `${s.coin} décolle : ${f(s.change5m)} % en 5 min, ${f(s.change15m)} % en 15 min${vol}`,
-      reasons: [`variation 5 min ${f(s.change5m)} % (seuil ${cfg.pumpPct5m} %)`, `variation 15 min ${f(s.change15m)} % (seuil ${cfg.pumpPct15m} %)`, `volume 24 h ${usd(s.volume24hUsd)} sur ${s.pair}`],
-      metrics,
+      reasons,
+      metrics: { ...metrics, ...flowMetrics },
     });
   }
-  const down = Math.max(-(s.change5m ?? 0) / cfg.dumpPct5m, -(s.change15m ?? 0) / cfg.dumpPct15m);
+  const down = Math.max(-(s.change5m ?? 0) / dn5, -(s.change15m ?? 0) / dn15);
   if (down >= 1) {
+    const reasons = [`variation 5 min ${f(s.change5m)} % (seuil −${dn5.toFixed(1)} %)`, `variation 15 min ${f(s.change15m)} % (seuil −${dn15.toFixed(1)} %)`];
     out.push({
       ...base,
       kind: "DUMP_EARLY",
       direction: "bearish",
-      strength: Math.round(clamp(strengthFromRatio(down) * liq)),
+      strength: refine(-1, strengthFromRatio(down) * liq, reasons),
       title: `${s.coin} chute : ${f(s.change5m)} % en 5 min, ${f(s.change15m)} % en 15 min${vol}`,
-      reasons: [`variation 5 min ${f(s.change5m)} % (seuil −${cfg.dumpPct5m} %)`, `variation 15 min ${f(s.change15m)} % (seuil −${cfg.dumpPct15m} %)`],
-      metrics,
+      reasons,
+      metrics: { ...metrics, ...flowMetrics },
     });
   }
   if (s.volumeRatio1h !== null && s.volumeRatio1h >= cfg.volumeSurgeRatio) {

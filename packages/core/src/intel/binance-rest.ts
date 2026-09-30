@@ -38,7 +38,16 @@ export class BinanceRestHistory {
     return [...byCoin.values()];
   }
 
+  /** Snapshots without recording (to pre-screen movers). */
+  preview(tickers: BinanceMiniRestTicker[], now: number): LiveSnapshot[] {
+    return this.compute(tickers, now, false);
+  }
+
   update(tickers: BinanceMiniRestTicker[], now: number): LiveSnapshot[] {
+    return this.compute(tickers, now, true);
+  }
+
+  private compute(tickers: BinanceMiniRestTicker[], now: number, record: boolean): LiveSnapshot[] {
     const out: LiveSnapshot[] = [];
     for (const { coin, t } of this.pick(tickers, now)) {
       const price = t.lastPrice;
@@ -52,6 +61,7 @@ export class BinanceRestHistory {
         return best && best[1] > 0 ? ((price - best[1]) / best[1]) * 100 : null;
       };
       out.push({ coin, pair: t.symbol, priceUsd: price, change5m: ago(5), change15m: ago(15), change1h: null, volumeRatio1h: null, volume24hUsd: t.quoteVolume, high24h: t.highPrice, low24h: t.lowPrice });
+      if (!record) continue;
       const last = h[h.length - 1];
       if (!last || now - last[0] >= this.minSpacingMs) h.push([now, price]);
       while (h.length && (h[0] as [number, number])[0] < now - KEEP_MS) h.shift();
