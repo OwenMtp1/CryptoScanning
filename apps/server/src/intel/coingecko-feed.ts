@@ -11,7 +11,7 @@
  * `x-cg-pro-api-key` (paid plans, pro-api.coingecko.com). Keyless use of the
  * public API is possible but more strictly rate-limited.
  */
-import { CgDerivativeExchangeSchema, CgMarketRowSchema, derivativeRowsFromExchange, CgTrendingSchema, GtPoolsSchema, type CgDerivative, type CgMarketRow, type GtPools, type IntelConfig, type TrendingCoin } from "@radar/core";
+import { CgDerivativeExchangeSchema, CgMarketRowSchema, derivativeRowsFromExchange, CgTrendingSchema, GtPoolsSchema, trendingCategories, type TrendCategory, type CgDerivative, type CgMarketRow, type GtPools, type IntelConfig, type TrendingCoin } from "@radar/core";
 import type { CallBudget } from "./budget.js";
 import type { FetchText } from "./http.js";
 
@@ -19,7 +19,7 @@ export type CoinGeckoPlan = "demo" | "pro" | "public";
 
 export interface CoinGeckoHandlers {
   onMarkets(rows: CgMarketRow[], page: number, now: number): void;
-  onTrending(list: TrendingCoin[], now: number): void;
+  onTrending(list: TrendingCoin[], now: number, categories?: TrendCategory[]): void;
   onDerivatives(rows: CgDerivative[], now: number): void;
   onPools(doc: GtPools, isNewList: boolean, now: number): void;
   onError(task: string, message: string, now: number): void;
@@ -105,7 +105,7 @@ export class CoinGeckoFeed {
       run: (text, now) => {
         const t = CgTrendingSchema.parse(JSON.parse(text));
         const list = t.coins.map((c, i) => ({ id: c.item.id, symbol: c.item.symbol, name: c.item.name, rank: i, marketCapRank: c.item.market_cap_rank }));
-        h.onTrending(list, now);
+        h.onTrending(list, now, trendingCategories(t));
         return list.length;
       },
     });

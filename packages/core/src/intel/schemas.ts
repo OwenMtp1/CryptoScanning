@@ -103,6 +103,18 @@ export const CgTrendingSchema = z.object({
       }),
     )
     .default([]),
+  /** Trending categories (market-cap change of each sector). */
+  categories: z
+    .array(
+      z.object({
+        name: z.string(),
+        market_cap_1h_change: optNum,
+        coins_count: z.union([z.number(), z.string()]).nullable().optional(),
+        data: z.object({ market_cap_change_percentage_24h: z.object({ usd: optNum }).partial().nullable().optional() }).partial().nullable().optional(),
+      }),
+    )
+    .default([])
+    .catch([]),
 });
 
 /** Item of `GET /derivatives`. */
@@ -213,3 +225,13 @@ export const GtPoolsSchema = z.object({
     .optional(),
 });
 export type GtPools = z.infer<typeof GtPoolsSchema>;
+
+/** Trending categories of a `/search/trending` answer, in the trends format. */
+export function trendingCategories(t: { categories?: { name: string; market_cap_1h_change?: number | null; coins_count?: number | string | null; data?: { market_cap_change_percentage_24h?: { usd?: number | null } | null } | null }[] }) {
+  return (t.categories ?? []).map((c) => ({
+    name: c.name,
+    change1h: c.market_cap_1h_change ?? null,
+    change24h: c.data?.market_cap_change_percentage_24h?.usd ?? null,
+    coinsCount: c.coins_count === null || c.coins_count === undefined || !Number.isFinite(Number(c.coins_count)) ? null : Number(c.coins_count),
+  }));
+}

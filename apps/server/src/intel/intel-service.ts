@@ -14,6 +14,9 @@ import {
   isNoiseCoin,
   readLeverage,
   setupCandidate,
+  buildTrends,
+  type TrendCategory,
+  type TrendPost,
   type TradeSetup,
   type LeverageReading,
   type PerpMarket,
@@ -80,6 +83,8 @@ export interface IntelSavedState {
   leverage?: { lastBias: Record<string, string>; oi: Record<string, number>; lastAlert?: Record<string, { bias: string; score: number; at: number }> };
   /** Last LONG / SHORT setup alerted per coin. */
   setups?: Record<string, { bias: string; at: number }>;
+  /** Recent Reddit posts and CoinGecko trending categories (trends page). */
+  trends?: { social: TrendPost[]; categories: TrendCategory[] };
   extras?: Record<string, unknown>;
 }
 
@@ -161,6 +166,11 @@ export class IntelService {
   private lastBias = new Map<string, string>();
   /** productId → last alert sent (to re-alert when the setup strengthens or as a reminder). */
   private setupBoard = new Map<string, SetupView>();
+  /** Recent Reddit posts (titles) for the trends page. */
+  private socialPosts: TrendPost[] = [];
+  private trendCategories: TrendCategory[] = [];
+  /** Attention-board ranks every 10 min (for the ▲ / ▼ of the trends page). */
+  private rankSnaps: { at: number; ranks: Record<string, number> }[] = [];
   private lastSetup = new Map<string, { bias: string; at: number }>();
   private lastLevAlert = new Map<string, { bias: string; score: number; at: number }>();
   private levRules = { minScore: 25, strengthenStep: 0, remindHours: 0 };
@@ -204,6 +214,8 @@ export class IntelService {
     this.lastLevAlert = new Map(Object.entries(st.leverage?.lastAlert ?? {}));
     this.perpOi = new Map(Object.entries(st.leverage?.oi ?? {}));
     this.lastSetup = new Map(Object.entries(st.setups ?? {}));
+    this.socialPosts = (st.trends?.social ?? []).filter((p) => this.now() - p.ts < 24 * 3_600_000);
+    this.trendCategories = st.trends?.categories ?? [];
   }
 
   exportState(extras?: Record<string, unknown>): IntelSavedState {
@@ -219,6 +231,7 @@ export class IntelService {
       social: this.social.export(),
       leverage: { lastBias: Object.fromEntries(this.lastBias), oi: Object.fromEntries(this.perpOi), lastAlert: Object.fromEntries(this.lastLevAlert) },
       setups: Object.fromEntries(this.lastSetup),
+      trends: { social: this.socialPosts.slice(-300), categories: this.trendCategories },
       extras,
     };
   }
@@ -369,7 +382,8 @@ export class IntelService {
     this.emit(this.ingest(cands, now), []);
   }
 
-  onTrending(list: TrendingCoin[], now = this.now()) {
+  onTrending(list: TrendingCoin[], now = this.now(), categories?: TrendCategory[]) {
+    if (categories?.length) this.trendCategories = categories;
     const cands = detectTrendingEntries(list, this.trendingIds, (s) => this.engine.priceOf(s));
     this.trendingIds = new Set(list.map((c) => c.id));
     this.engine.setTrending(list, now);
@@ -532,6 +546,9 @@ export class IntelService {
       const n = toNewsItem(r, feed, this.matcher);
       return { id: n.id, ts: n.ts, coins: n.coins, direction: n.direction, title: n.title, link: n.link, feed };
     });
+    const known = new Set(this.socialPosts.map((p) => p.id));
+    for (const p of posts) if (!known.has(p.id)) this.socialPosts.push({ ...p, kind: "social" });
+    this.socialPosts = this.socialPosts.filter((p) => now - p.ts < 24 * 3_600_000).sort((a, b) => a.ts - b.ts).slice(-800);
     this.setSourceState("social", "ok", `${posts.length} posts lus (${feed})`, now, posts.length);
     this.emit(this.ingest(this.social.add(posts, now), now), []);
   }
@@ -729,6 +746,35 @@ export class IntelService {
 
   setupOf(coin: string): SetupView | null {
     return this.setupBoard.get(coin.toUpperCase()) ?? null;
+  }
+
+  // ─── Trends ──────────────────────────────────────────────────────────────
+
+  /** Narratives, attention leaderboard and news pulse (trends page). */
+  trends(now = this.now()) {
+    const hourAgo = [...this.rankSnaps].reverse().find((x) => now - x.at >= 55 * 60_000) ?? this.rankSnaps[0];
+    const view = buildTrends({
+      now,
+      news: this.engine.recentNews({ limit: 1500 }),
+      social: this.socialPosts,
+      trending: this.engine
+        .universeRows()
+        .filter((r) => r.trendingRank !== null)
+        .map((r) => ({ symbol: r.symbol, name: r.name, rank: r.trendingRank as number })),
+      categories: this.trendCategories,
+      signals: this.engine.recentSignals({ since: now - 6 * 3_600_000, limit: 3000 }),
+      coin: (sym) => {
+        const r = this.engine.coin(sym);
+        return r ? { name: r.name, change1h: r.live?.change1h ?? r.change1h, change24h: r.change24h } : null;
+      },
+      previousRanks: hourAgo && now - hourAgo.at >= 10 * 60_000 ? hourAgo.ranks : undefined,
+    });
+    const last = this.rankSnaps[this.rankSnaps.length - 1];
+    if (!last || now - last.at >= 10 * 60_000) {
+      this.rankSnaps.push({ at: now, ranks: Object.fromEntries(view.coins.map((c) => [c.coin, c.rank])) });
+      this.rankSnaps = this.rankSnaps.filter((x) => now - x.at < 3 * 3_600_000);
+    }
+    return view;
   }
 
   /** Candidates produced outside the built-in sources (e.g. new listings detected by the bot). */

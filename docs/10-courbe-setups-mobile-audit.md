@@ -170,3 +170,34 @@ Points vérifiés sans problème :
   signaux et un bouton en charge 300 de plus.
 - **La file d'envoi vers Discord est gardée dans le navigateur.** Un rechargement ou un onglet fermé ne perd plus les
   signaux en attente (40 min au plus).
+
+## 10. Onglet « Tendances »
+
+C'est le focus sur ce dont le marché parle. Le calcul se fait dans `packages/core/src/intel/trends.ts`, et la page
+est `app/tendances/page.tsx`.
+
+- **Bandeau d'actus défilant.** Il passe les derniers titres des médias et de Reddit, avec leur humeur, les cryptos
+  citées et un badge « NOUVEAU » pour ceux de moins de 20 min. Il s'arrête au survol.
+- **Carte des narratifs (6 h).** 16 thèmes sont suivis :
+  - IA, memecoins, ETF et institutionnels, régulation, hacks, macro ;
+  - Layer 2, DeFi, RWA, stablecoins, gaming, DePIN ;
+  - listings et airdrops, Bitcoin, Ethereum, Solana.
+
+  Ils sont détectés par mots-clés (français et anglais) et par les cryptos citées. Chaque thème est une bulle qui
+  flotte :
+  - **Taille = chaleur** : les mentions récentes comptent plus (demi-vie de 3 h).
+  - **Couleur = humeur** des titres.
+  - **Anneau qui pulse** quand le thème s'emballe : 2 h dernières ≥ 1,5 fois le rythme d'avant.
+  - Un clic ouvre le détail : titres, cryptos du thème avec leur variation, mentions par demi-heure, secteur
+    CoinGecko correspondant.
+- **« Qui monte dans les conversations ».** Les cryptos sont classées selon :
+  - les mentions dans les médias et sur Reddit ;
+  - leur rang dans les tendances CoinGecko ;
+  - les signaux du radar.
+
+  Les lignes glissent à leur nouvelle place quand l'ordre change. ▲ / ▼ indiquent les places gagnées ou perdues en
+  environ 1 h, et « new » les nouvelles entrées.
+- **Pouls des actus (24 h).** Titres positifs au-dessus et négatifs en dessous, heure par heure. Le survol donne le
+  détail.
+- **Secteurs en tendance.** Ce sont les catégories CoinGecko, avec la variation de leur capitalisation.
+- Les animations sont coupées si le téléphone ou l'ordinateur demande moins d'animations (réglage d'accessibilité).

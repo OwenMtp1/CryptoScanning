@@ -8,6 +8,7 @@ import DiscordPage from "../app/discord/page";
 import UniversPage from "../app/univers/page";
 import CourbePage from "../app/courbe/page";
 import SetupsPage from "../app/setups/page";
+import TendancesPage from "../app/tendances/page";
 import { DialogProvider } from "../components/Dialogs";
 import { CoinDrawerProvider } from "../components/Intel";
 import { RadarStreamProvider } from "../lib/stream";
@@ -22,12 +23,14 @@ const ROUTES: Record<string, ComponentType> = {
   "/levier": LevierPage,
   "/courbe": CourbePage,
   "/setups": SetupsPage,
+  "/tendances": TendancesPage,
   "/discord": DiscordPage,
 };
 const NAV = [
   ["/", "Flux"],
   ["/univers", "Univers"],
   ["/performance", "Performance"],
+  ["/tendances", "Tendances"],
   ["/setups", "Setups"],
   ["/courbe", "Courbe"],
   ["/levier", "Levier"],
@@ -38,9 +41,9 @@ const NAV = [
 /** Phone tab bar: the 4 most used pages + « Plus » for the others. */
 const TABS = [
   ["/", "📡", "Flux"],
+  ["/tendances", "🔥", "Tendances"],
   ["/setups", "🎯", "Setups"],
   ["/courbe", "📈", "Courbe"],
-  ["/levier", "⚖️", "Levier"],
 ] as const;
 const MORE = NAV.filter(([h]) => !TABS.some(([t]) => t === h));
 
@@ -97,7 +100,7 @@ function WebHeader({ path }: { path: string }) {
             </a>
           ))}
         </nav>
-        <span className="ml-auto hidden text-[11px] text-slate-500 lg:inline">Données réelles · analyse dans ton navigateur · pas des conseils d&apos;investissement</span>
+        <span className="ml-auto hidden text-[11px] text-slate-500 2xl:inline">Données réelles · analyse dans ton navigateur · pas des conseils d&apos;investissement</span>
       </div>
     </header>
   );

@@ -145,7 +145,7 @@ async function main() {
           lastRun: extras.cgLastRun,
           handlers: {
             onMarkets: (rows, page, now) => svc.onMarkets(rows, page, now),
-            onTrending: (list, now) => svc.onTrending(list, now),
+            onTrending: (list, now, categories) => svc.onTrending(list, now, categories),
             onDerivatives: (rows, now) => svc.onDerivatives(rows, now),
             onPools: (doc, isNew, now) => svc.onPools(doc, isNew, now),
             onSuccess: (task, n, now) => svc.onCoinGeckoResult(task, true, null, n, now),

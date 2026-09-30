@@ -99,6 +99,7 @@ function handleIntel(ctx: RouteContext, pathname: string, params: URLSearchParam
   }
   if (pathname === "/api/intel/sources") return ok(redact(intel.sourcesView(ctx.intelExtras?.() ?? {})));
   if (pathname === "/api/intel/leverage") return ok(intel.leverage());
+  if (pathname === "/api/intel/trends") return ok(intel.trends());
   if (pathname === "/api/intel/setups") return ok(intel.setups({ bias: params.get("bias") ?? undefined, limit: Number(params.get("limit")) || undefined }));
   if (pathname === "/api/intel/config") return ok(redact(intel.config()));
   return null;

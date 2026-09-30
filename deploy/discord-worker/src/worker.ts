@@ -23,6 +23,7 @@ import {
   CgMarketRowSchema,
   derivativeRowsFromExchange,
   CgTrendingSchema,
+  trendingCategories,
   CoinbasePriceHistory,
   GtPoolsSchema,
   IntelConfigSchema,
@@ -753,7 +754,7 @@ export class RadarState {
         if (tr) {
           const t = CgTrendingSchema.safeParse(JSON.parse(tr));
           if (t.success) {
-            svc.onTrending(t.data.coins.map((c, i) => ({ id: c.item.id, symbol: c.item.symbol, name: c.item.name, rank: i, marketCapRank: c.item.market_cap_rank })), now);
+            svc.onTrending(t.data.coins.map((c, i) => ({ id: c.item.id, symbol: c.item.symbol, name: c.item.name, rank: i, marketCapRank: c.item.market_cap_rank })), now, trendingCategories(t.data));
             sources.trending = `${t.data.coins.length}`;
           }
         }
