@@ -82,6 +82,21 @@ const DISCORD_RESERVE = 18;
 const EXCHANGES: ExchangeId[] = ["okx", "kucoin", "mexc"];
 /** Name of the live instance. An older instance (e.g. before the move to Europe) stops its own loop. */
 const ACTIVE = "eu-1";
+/**
+ * Binance public market-data hosts. They sit behind different CDNs / firewalls: when one refuses the
+ * bot's Cloudflare address (HTTP 451 / 403 / 418 / 429), the next one is tried and the one that works
+ * is remembered.
+ */
+export const BINANCE_HOSTS = [
+  "https://data-api.binance.vision",
+  "https://api.binance.com",
+  "https://api-gcp.binance.com",
+  "https://api1.binance.com",
+  "https://api2.binance.com",
+  "https://api3.binance.com",
+  "https://api4.binance.com",
+  "https://www.binance.com",
+];
 const FULL_MS = 5 * 60_000;
 export const ALL_KINDS: IntelKind[] = ["PUMP_EARLY", "DUMP_EARLY", "VOLUME_SURGE", "BREAKOUT_24H_HIGH", "BREAKDOWN_24H_LOW", "TOP_MOVER_1H", "CRASH_1H", "VOLUME_MCAP_ANOMALY", "NEAR_ATH", "TRENDING_ENTRY", "FUNDING_EXTREME_LONG", "FUNDING_EXTREME_SHORT", "OPEN_INTEREST_SURGE", "DEX_NEW_POOL_TRACTION", "DEX_TRENDING_PUMP", "DEX_RUG_RISK", "NEWS_BULLISH", "NEWS_BEARISH", "NEW_LISTING", "LIQUIDATIONS_LONG", "LIQUIDATIONS_SHORT", "SOCIAL_BUZZ", "LEVERAGE_LONG", "LEVERAGE_SHORT", "SETUP_LONG", "SETUP_SHORT", "CONFLUENCE"];
 export const ALL_SOURCES: IntelSource[] = ["coinbase", "binance", "exchanges", "coingecko", "trending", "derivatives", "dex", "news", "social", "leverage", "setup"];
@@ -232,6 +247,7 @@ interface Status {
   filteredByPrefs?: number;
   sent24h?: unknown;
   market?: unknown;
+  binance?: unknown;
   sources: Record<string, string>;
   errors: string[];
   relay: { configured: boolean; received: number; lastAt: number | null; rejected?: number };
@@ -317,11 +333,13 @@ export class RadarState {
     history: CoinbasePriceHistory;
     binance: BinanceRestHistory;
     binanceBackoffUntil: number;
+    binanceHost: number;
+    binanceDiag: { host: string | null; okAt: number | null; lastError: string | null; tried: Record<string, string> };
     coinbaseBackoffUntil: number;
     /** coin:kind → last sent (shared by the bot's own signals and the site's relayed ones). */
     seen: Map<string, number>;
     prefs: DiscordPrefs;
-    recentSent: { ts: number; dir: Direction; kind: IntelKind; coin: string; channel: string }[];
+    recentSent: { ts: number; dir: Direction; kind: IntelKind; coin: string; channel: string; src?: string }[];
     listings: { cb: Set<string>; cbCoins: Set<string>; bn: Set<string>; seededCb: boolean; seededBn: boolean };
     lsBackoffUntil: number;
     stage: number;
@@ -441,10 +459,13 @@ export class RadarState {
     const env = this.env;
     const minStrength = Number(env.DISCORD_MIN_STRENGTH);
     const role = env.DISCORD_ROLE_ID?.trim();
-    // Everything the engine detects is sent, one notification per signal (DISCORD_MIN_STRENGTH can raise the bar).
+    // Everything the engine detects is sent, one notification per signal. The only strength filter is the
+    // one of the Discord settings panel. DISCORD_MIN_STRENGTH (old setting) is ignored: it acted as a second,
+    // hidden threshold that silently dropped the weaker signals — most of Binance's.
+    void minStrength;
     const cfg = IntelConfigSchema.parse({
       discord: {
-        minStrength: Number.isFinite(minStrength) && env.DISCORD_MIN_STRENGTH ? minStrength : 0,
+        minStrength: 0,
         directions: ["bullish", "bearish", "neutral"],
         perCoinCooldownMin: 0,
         digestMin: 0,
@@ -453,7 +474,7 @@ export class RadarState {
         ...(role && /^\d+$/.test(role) ? { mentionRoleId: role } : {}),
       },
     });
-    const meta = (await st.get<{ warm?: boolean; welcomed?: string[]; lastFullRunAt?: number; relay?: { received: number; lastAt: number | null; rejected?: number }; sentLog?: number[]; seen?: Record<string, number>; stage?: number; lastCycleAt?: number | null; exchangeTurn?: number; setupTurn?: number }>("meta")) ?? {};
+    const meta = (await st.get<{ warm?: boolean; welcomed?: string[]; lastFullRunAt?: number; relay?: { received: number; lastAt: number | null; rejected?: number }; sentLog?: number[]; seen?: Record<string, number>; stage?: number; lastCycleAt?: number | null; exchangeTurn?: number; setupTurn?: number; binanceHost?: number }>("meta")) ?? {};
 
     // Channel routing: one webhook per direction when configured, the general webhook for the rest,
     // and an optional leverage channel that takes the leveraged-market kinds.
@@ -487,9 +508,11 @@ export class RadarState {
       history: new CoinbasePriceHistory((await st.get("cb")) ?? null),
       binance: new BinanceRestHistory(cfg.binance.quotes, (await st.get("bn")) ?? null),
       binanceBackoffUntil: 0,
+      binanceHost: meta.binanceHost ?? 0,
+      binanceDiag: { host: null, okAt: null, lastError: null, tried: {} },
       coinbaseBackoffUntil: 0,
       seen: new Map(Object.entries(meta.seen ?? {})),
-      prefs: { ...defaultPrefs(cfg.discord.minStrength), ...((await st.get<Partial<DiscordPrefs>>("prefs")) ?? {}), leverage: { ...defaultLeveragePrefs(), ...((await st.get<Partial<DiscordPrefs>>("prefs"))?.leverage ?? {}) } },
+      prefs: { ...defaultPrefs(0), ...((await st.get<Partial<DiscordPrefs>>("prefs")) ?? {}), leverage: { ...defaultLeveragePrefs(), ...((await st.get<Partial<DiscordPrefs>>("prefs"))?.leverage ?? {}) } },
       recentSent: (await st.get<{ ts: number; dir: Direction; kind: IntelKind; coin: string; channel: string }[]>("recentSent")) ?? [],
       listings: (() => {
         return { cb: new Set<string>(), cbCoins: new Set<string>(), bn: new Set<string>(), seededCb: false, seededBn: false };
@@ -561,7 +584,7 @@ export class RadarState {
     L.sentLog.push(this.clock);
     const lev = L.channels.find((c) => c.id === "leverage");
     const note = (channel: string) => {
-      L.recentSent.push({ ts: this.clock, dir: s.direction, kind: s.kind, coin: s.coin, channel });
+      L.recentSent.push({ ts: this.clock, dir: s.direction, kind: s.kind, coin: s.coin, channel, src: s.source });
       if (L.recentSent.length > 400) L.recentSent.splice(0, L.recentSent.length - 400);
     };
     if (lev && LEVERAGE_KINDS.has(s.kind)) {
@@ -644,6 +667,27 @@ export class RadarState {
     }
   }
 
+  /**
+   * GET on Binance, starting with the host that worked last; up to 3 hosts per run. A refusal
+   * (451 / 403 / 418 / 429 / network) moves to the next host, which is remembered when it answers.
+   */
+  private async binanceGet(L: NonNullable<RadarState["loaded"]>, path: string): Promise<string | null> {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const base = BINANCE_HOSTS[L.binanceHost % BINANCE_HOSTS.length] as string;
+      const text = await this.get(`Binance ${base.replace("https://", "")}`, `${base}${path}`, true);
+      if (text !== null && text.trimStart().startsWith("[")) {
+        L.binanceDiag = { host: base, okAt: this.clock, lastError: null, tried: {} };
+        return text;
+      }
+      const why = text !== null ? "réponse inattendue" : (this.lastGetError ?? "sans réponse");
+      if (/limite de requêtes/.test(why)) return null; // out of budget for this run, not a refusal
+      L.binanceDiag.lastError = `${base.replace("https://", "")} : ${why}`;
+      L.binanceDiag.tried[base] = why;
+      L.binanceHost = (L.binanceHost + 1) % BINANCE_HOSTS.length;
+    }
+    return null;
+  }
+
   private async scan(): Promise<Status> {
     const t0 = Date.now();
     this.clock = t0;
@@ -709,39 +753,42 @@ export class RadarState {
 
     // Every run: Binance (all pairs), 5 / 15 min moves and 24 h breakouts (weight 80 / call).
     if (now >= L.binanceBackoffUntil) {
-      const text = await this.get("Binance", "https://data-api.binance.vision/api/v3/ticker/24hr?type=MINI&symbolStatus=TRADING");
-      if (text) {
-        const tickers = arr<BinanceMiniRestTicker>(text, BinanceMiniRestTickerSchema);
-        if (tickers.length) {
-          // Buy / sell flow for the coins that are moving (klines 1 min: taker-buy share of the volume).
-          const movers = L.binance
-            .preview(tickers, now)
-            .filter((x) => Math.abs(x.change5m ?? 0) >= L.cfg.binance.pumpPct5m * 0.5 || Math.abs(x.change15m ?? 0) >= L.cfg.binance.pumpPct15m * 0.5)
-            .sort((a, b) => Math.abs(b.change5m ?? 0) - Math.abs(a.change5m ?? 0))
-            .slice(0, 4);
-          for (const m of movers) {
-            const k = await this.get(`Flux ${m.pair}`, `https://data-api.binance.vision/api/v3/klines?symbol=${m.pair}&interval=1m&limit=5`);
-            if (!k) continue;
-            try {
-              const rows = JSON.parse(k) as unknown[][];
-              const q = rows.reduce((a, r) => a + Number(r[7]), 0);
-              const tb = rows.reduce((a, r) => a + Number(r[10]), 0);
-              if (q > 0 && Number.isFinite(tb)) L.flow.set(m.coin, tb / q);
-            } catch {
-              // ignore a malformed answer
-            }
+      const text = await this.binanceGet(L, "/api/v3/ticker/24hr?type=MINI&symbolStatus=TRADING");
+      const base = BINANCE_HOSTS[L.binanceHost % BINANCE_HOSTS.length] as string;
+      const tickers = text ? arr<BinanceMiniRestTicker>(text, BinanceMiniRestTickerSchema) : [];
+      if (tickers.length) {
+        // Buy / sell flow for the coins that are moving (klines 1 min: taker-buy share of the volume).
+        const movers = L.binance
+          .preview(tickers, now)
+          .filter((x) => Math.abs(x.change5m ?? 0) >= L.cfg.binance.pumpPct5m * 0.5 || Math.abs(x.change15m ?? 0) >= L.cfg.binance.pumpPct15m * 0.5)
+          .sort((a, b) => Math.abs(b.change5m ?? 0) - Math.abs(a.change5m ?? 0))
+          .slice(0, 4);
+        for (const m of movers) {
+          const k = await this.get(`Flux ${m.pair}`, `${base}/api/v3/klines?symbol=${m.pair}&interval=1m&limit=5`, true);
+          if (!k) continue;
+          try {
+            const rows = JSON.parse(k) as unknown[][];
+            const q = rows.reduce((a, r) => a + Number(r[7]), 0);
+            const tb = rows.reduce((a, r) => a + Number(r[10]), 0);
+            if (q > 0 && Number.isFinite(tb)) L.flow.set(m.coin, tb / q);
+          } catch {
+            // ignore a malformed answer
           }
-          svc.onBinanceTickers(tickers, L.binance, now, L.flow);
-          const pairs = tickers.map((t) => ({ pair: t.symbol, coin: this.baseOf(t.symbol) })).filter((x) => x.coin !== x.pair);
-          svc.ingestExternal(this.listingCandidates("binance", pairs), now);
-          sources.binance = `${L.binance.pick(tickers, now).length} cryptos`;
         }
-      } else if (this.errors.some((e) => /^Binance : HTTP (451|403)/.test(e))) {
-        // Binance refuses this server's location: try again in 30 min; Coinbase and the other exchanges cover meanwhile.
-        L.binanceBackoffUntil = now + 30 * 60_000;
-        sources.binance = "refusé par Binance (HTTP 451/403) : les autres plateformes prennent le relais";
-      } else L.binanceBackoffUntil = now + 60_000;
-    } else sources.binance = `en pause jusqu'à ${new Date(L.binanceBackoffUntil).toISOString().slice(11, 16)} UTC (refus précédent)`;
+        svc.onBinanceTickers(tickers, L.binance, now, L.flow);
+        const pairs = tickers.map((t) => ({ pair: t.symbol, coin: this.baseOf(t.symbol) })).filter((x) => x.coin !== x.pair);
+        svc.ingestExternal(this.listingCandidates("binance", pairs), now);
+        sources.binance = `${L.binance.pick(tickers, now).length} cryptos via ${base.replace("https://", "")}`;
+      } else {
+        // Every host tried this round refused: the next rounds continue with the following hosts;
+        // after a full turn without success, pause 10 min (Coinbase and the other exchanges cover).
+        const allRefused = Object.keys(L.binanceDiag.tried).length >= BINANCE_HOSTS.length;
+        L.binanceBackoffUntil = now + (allRefused ? 10 * 60_000 : 20_000);
+        if (allRefused) L.binanceDiag.tried = {};
+        sources.binance = `refusé : ${L.binanceDiag.lastError ?? "sans réponse"}${allRefused ? " (tous les accès Binance essayés, nouvel essai dans 10 min ; Coinbase et les autres plateformes prennent le relais)" : " (essai d'un autre accès Binance au prochain passage)"}`;
+        this.errors.push(`Binance : ${L.binanceDiag.lastError ?? "sans réponse"}`);
+      }
+    } else sources.binance = `en pause jusqu'à ${new Date(L.binanceBackoffUntil).toISOString().slice(11, 16)} UTC (tous les accès Binance ont refusé ; dernier motif : ${L.binanceDiag.lastError ?? "?"})`;
 
     // Every run: Coinbase (every listed crypto, one call).
     if (now >= L.coinbaseBackoffUntil) {
@@ -855,7 +902,7 @@ export class RadarState {
             },
             svc,
             coin,
-            { btcTrend: L.btcTrend.value, emit: L.warm, skipBinance: now < L.binanceBackoffUntil, now },
+            { btcTrend: L.btcTrend.value, emit: L.warm, skipBinance: now < L.binanceBackoffUntil || L.binanceDiag.okAt === null, binanceBase: BINANCE_HOSTS[L.binanceHost % BINANCE_HOSTS.length], now },
           );
           if (coin === "BTC") L.btcTrend = { value: r.trend, at: now };
           done++;
@@ -957,7 +1004,7 @@ export class RadarState {
 
   private meta(L: NonNullable<RadarState["loaded"]>) {
     const seen = Object.fromEntries([...L.seen].filter(([, t]) => t > this.clock - 30 * 60_000));
-    return { warm: L.warm, welcomed: [...L.welcomed], lastFullRunAt: L.lastFullRunAt, stage: L.stage, lastCycleAt: L.lastCycleAt, exchangeTurn: L.exchangeTurn, setupTurn: L.setupTurn, relay: L.relay, sentLog: L.sentLog.filter((t) => t > this.clock - 86_400_000).slice(-20000), seen };
+    return { warm: L.warm, welcomed: [...L.welcomed], lastFullRunAt: L.lastFullRunAt, stage: L.stage, lastCycleAt: L.lastCycleAt, exchangeTurn: L.exchangeTurn, setupTurn: L.setupTurn, binanceHost: L.binanceHost, relay: L.relay, sentLog: L.sentLog.filter((t) => t > this.clock - 86_400_000).slice(-20000), seen };
   }
 
   private discordView(L: NonNullable<RadarState["loaded"]>) {
@@ -978,14 +1025,15 @@ export class RadarState {
       sent24h: (() => {
         const day = L.recentSent.filter((x) => x.ts > this.clock - 86_400_000);
         const by = (f: (x: (typeof day)[number]) => string) => day.reduce<Record<string, number>>((a, x) => ((a[f(x)] = (a[f(x)] ?? 0) + 1), a), {});
-        return { byChannel: by((x) => x.channel), byDirection: by((x) => x.dir), byKind: by((x) => x.kind), last: day.slice(-10).reverse() };
+        return { byChannel: by((x) => x.channel), byDirection: by((x) => x.dir), byKind: by((x) => x.kind), bySource: by((x) => x.src ?? "?"), last: day.slice(-10).reverse() };
       })(),
       market: L.svc.marketContext(),
       // Keep the detail of the last full pass visible between fast runs.
       sources: full ? sources : { ...(prev?.sources ?? {}), ...sources },
-      errors: (full ? this.errors : [...this.errors, ...(prev?.errors ?? []).filter((e) => !e.startsWith("Coinbase") && !e.startsWith("Discord"))]).slice(0, 20),
+      errors: (full ? this.errors : [...this.errors, ...(prev?.errors ?? []).filter((e) => !e.startsWith("Coinbase") && !e.startsWith("Discord") && !e.startsWith("Binance"))]).slice(0, 20),
+      binance: { ...L.binanceDiag, pausedUntil: L.binanceBackoffUntil > this.clock ? L.binanceBackoffUntil : null },
       relay: { configured: !!this.env.RELAY_KEY?.trim(), ...L.relay },
-      config: { siteUrl: (this.env.SITE_URL ?? "").trim() || null, webhookConfigured: L.channels.some((c) => c.n.active), minStrength: L.cfg.discord.minStrength },
+      config: { siteUrl: (this.env.SITE_URL ?? "").trim() || null, webhookConfigured: L.channels.some((c) => c.n.active), minStrength: L.prefs.minStrength },
       discord: this.discordView(L),
     };
     const entries: Record<string, unknown> = {

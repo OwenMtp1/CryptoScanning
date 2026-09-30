@@ -11,6 +11,7 @@ interface Sent24h {
   byChannel: Record<string, number>;
   byDirection: Record<string, number>;
   byKind: Record<string, number>;
+  bySource?: Record<string, number>;
   last: { ts: number; dir: string; kind: string; coin: string; channel: string }[];
 }
 
@@ -61,6 +62,13 @@ const GROUPS: { label: string; kinds: IntelKind[] }[] = [
   { label: "Plusieurs sources d'accord", kinds: ["CONFLUENCE"] },
 ];
 
+interface BotBinance {
+  host: string | null;
+  okAt: number | null;
+  lastError: string | null;
+  pausedUntil: number | null;
+}
+
 const csv = (xs: string[]) => xs.join(", ");
 const parseCoins = (t: string) => [...new Set(t.split(/[\s,;]+/).map((x) => x.trim().toUpperCase()).filter(Boolean))];
 
@@ -76,7 +84,7 @@ export default function DiscordPage() {
   const [busy, setBusy] = useState(false);
   const [testing, setTesting] = useState(false);
   const [tests, setTests] = useState<{ results: { channel: string; ok: boolean; message: string }[]; missing: string[] } | null>(null);
-  const [sent, setSent] = useState<{ s: Sent24h | null; filtered: number | null } | null>(null);
+  const [sent, setSent] = useState<{ s: Sent24h | null; filtered: number | null; sources: Record<string, string>; errors: string[]; binance: BotBinance | null } | null>(null);
 
   const load = () =>
     getJson<PrefsResponse>("/api/web/prefs").then(
@@ -96,8 +104,8 @@ export default function DiscordPage() {
     const loadSent = () =>
       getJson<SourcesResponse>("/api/intel/sources").then(
         (r) => {
-          const st = r.discordWorker?.status as { sent24h?: Sent24h; filteredByPrefs?: number } | undefined;
-          setSent({ s: st?.sent24h ?? null, filtered: st?.filteredByPrefs ?? null });
+          const st = r.discordWorker?.status as { sent24h?: Sent24h; filteredByPrefs?: number; sources?: Record<string, string>; errors?: string[]; binance?: BotBinance } | undefined;
+          setSent({ s: st?.sent24h ?? null, filtered: st?.filteredByPrefs ?? null, sources: st?.sources ?? {}, errors: st?.errors ?? [], binance: st?.binance ?? null });
         },
         () => {},
       );
@@ -376,12 +384,54 @@ export default function DiscordPage() {
               <span>⚖️ levier {(sent.s.byKind.LEVERAGE_LONG ?? 0) + (sent.s.byKind.LEVERAGE_SHORT ?? 0) + (sent.s.byKind.LIQUIDATIONS_LONG ?? 0) + (sent.s.byKind.LIQUIDATIONS_SHORT ?? 0)}</span>
               {sent.filtered !== null && <span>écartés par tes réglages : {sent.filtered}</span>}
             </div>
+            {sent.s.bySource && Object.keys(sent.s.bySource).length > 0 && (
+              <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-400">
+                <span className="text-slate-500">par source :</span>
+                {Object.entries(sent.s.bySource)
+                  .sort((a, b) => b[1] - a[1])
+                  .map(([k, v]) => (
+                    <span key={k}>
+                      {SOURCE_LABEL[k as keyof typeof SOURCE_LABEL] ?? k} <span className="num text-slate-200">{v}</span>
+                    </span>
+                  ))}
+              </div>
+            )}
             {sent.s.last.length > 0 && (
               <ul className="text-xs text-slate-400">
                 {sent.s.last.map((x, i) => (
                   <li key={i}>
                     il y a {fmtAgo(x.ts)} · {x.coin} · {KIND_LABEL[x.kind as keyof typeof KIND_LABEL] ?? x.kind} → salon {x.channel}
                   </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
+      </Card>
+
+      <Card title="Ce que le bot lit en ce moment">
+        {!sent ? (
+          <p className="text-sm text-slate-500">Chargement…</p>
+        ) : (
+          <div className="space-y-2 text-sm">
+            {sent.binance && (
+              <p className={sent.binance.okAt && !sent.binance.pausedUntil ? "text-emerald-300" : "text-amber-300"}>
+                {sent.binance.okAt && !sent.binance.pausedUntil
+                  ? `✅ Binance lu par le bot via ${sent.binance.host?.replace("https://", "")} (il y a ${fmtAgo(sent.binance.okAt)})`
+                  : `⚠️ Binance refuse le bot : ${sent.binance.lastError ?? "sans réponse"}. Le bot essaie les 8 accès Binance à tour de rôle. En attendant, les signaux Binance partent sur Discord quand ce site est ouvert (relais), et Coinbase / OKX / KuCoin / MEXC couvrent le reste.`}
+              </p>
+            )}
+            <ul className="space-y-0.5 text-xs text-slate-400">
+              {Object.entries(sent.sources).map(([k, v]) => (
+                <li key={k}>
+                  <span className="font-semibold text-slate-300">{SOURCE_LABEL[k as keyof typeof SOURCE_LABEL] ?? k}</span> : {v}
+                </li>
+              ))}
+            </ul>
+            {sent.errors.length > 0 && (
+              <ul className="space-y-0.5 text-xs text-rose-300/90">
+                {sent.errors.slice(0, 8).map((e, i) => (
+                  <li key={i}>• {e}</li>
                 ))}
               </ul>
             )}

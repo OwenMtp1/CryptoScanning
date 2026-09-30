@@ -14,6 +14,7 @@ let extraProducts: unknown[] = [];
 let btc1h = 0;
 let perps: unknown[] = [];
 let klines1h: unknown[][] | null = null;
+let binanceBlocked: string[] = [];
 /** 300 hourly Binance klines of a steady uptrend with pullbacks. */
 const uptrend = () => {
   const out: unknown[][] = [];
@@ -48,8 +49,10 @@ function fakeFetch(url: string, init?: { method?: string; body?: string }) {
     posted.push({ body: init?.body ?? "" });
     return res("{}");
   }
-  if (url.startsWith("https://data-api.binance.vision/api/v3/klines") && url.includes("interval=1h") && klines1h) return res(JSON.stringify(klines1h));
-  if (url.startsWith("https://data-api.binance.vision/")) return res(JSON.stringify([{ symbol: "WIFUSDT", openPrice: "1", highPrice: "2", lowPrice: "0.5", lastPrice: String(price), volume: "1", quoteVolume: "90000000", openTime: 0, closeTime: Date.now() }]));
+  const bnHost = /^https:\/\/(data-api\.binance\.vision|api\d?\.binance\.com|api-gcp\.binance\.com|www\.binance\.com)\//.exec(url)?.[1];
+  if (bnHost && binanceBlocked.includes(bnHost)) return res(JSON.stringify({ code: 0, msg: "Service unavailable from a restricted location" }), 451);
+  if (bnHost && url.includes("/api/v3/klines") && url.includes("interval=1h") && klines1h) return res(JSON.stringify(klines1h));
+  if (bnHost) return res(JSON.stringify([{ symbol: "WIFUSDT", openPrice: "1", highPrice: "2", lowPrice: "0.5", lastPrice: String(price), volume: "1", quoteVolume: "90000000", openTime: 0, closeTime: Date.now() }]));
   if (url.includes("product_type=FUTURE")) return res(JSON.stringify({ products: perps }));
   if (url.startsWith("https://api.coinbase.com/")) return res(JSON.stringify({ products: [product("PEPE-USD", price), product("BTC-USD", 100_000), product("BTC-EUR", 90_000), ...extraProducts] }));
   if (url.startsWith("https://fapi.binance.com/")) return res(JSON.stringify([{ symbol: "BTCUSDT", longShortRatio: "3.2" }]));
@@ -397,5 +400,29 @@ describe("Discord worker", () => {
     const env = { RADAR: { idFromName: () => { throw new Error("must not reach the bot"); } } as never };
     const r = await worker.fetch(new Request("https://bot/relay", { method: "POST", body: big, duplex: "half" } as RequestInit), env as never);
     expect(r.status).toBe(413);
+  });
+
+  it("Binance refusing one access point: the bot switches to another one and Binance alerts still reach Discord", async () => {
+    vi.useFakeTimers({ now: Date.UTC(2026, 8, 21, 12, 0), toFake: ["Date"] });
+    posted.length = 0;
+    binanceBlocked = ["data-api.binance.vision"];
+    try {
+      vi.stubGlobal("fetch", vi.fn(async (u: string, i?: { method?: string; body?: string }) => fakeFetch(u, i)));
+      const st = storage();
+      const env = { RADAR: {} as never, DISCORD_WEBHOOK_URL: WEBHOOK, SITE_URL: SITE, DISCORD_MIN_STRENGTH: "95" };
+      const run = () => scan3(() => new RadarState({ storage: st } as never, env));
+      price = 1;
+      await run();
+      vi.setSystemTime(Date.now() + 5 * 60_000);
+      price = 1.08;
+      const s = await run();
+      expect(s.binance.host).toBe("https://api.binance.com");
+      expect(s.sources.binance).toContain("api.binance.com");
+      // The old DISCORD_MIN_STRENGTH no longer hides weaker signals.
+      expect(posted.map((p) => p.body).join(" ")).toContain("WIF décolle");
+      expect(s.sent24h.bySource.binance).toBeGreaterThan(0);
+    } finally {
+      binanceBlocked = [];
+    }
   });
 });

@@ -11,12 +11,14 @@ export interface SetupRunOptions {
   btcTrend: number | null;
   emit?: boolean;
   skipBinance?: boolean;
+  /** Binance host that answers from this server (the bot rotates between several). */
+  binanceBase?: string;
   now?: number;
 }
 
 /** Analyse `coin` and hand the result to the service. Returns the setup and the Bitcoin trend when coin = BTC. */
 export async function runSetup(get: (url: string) => Promise<string>, svc: IntelService, coin: string, o: SetupRunOptions): Promise<{ setup: TradeSetup | null; trend: number | null; source: string }> {
-  const r = await loadCandles(get, coin, "1h", 300, { skipBinance: o.skipBinance, now: o.now });
+  const r = await loadCandles(get, coin, "1h", 300, { skipBinance: o.skipBinance, now: o.now, binanceBase: o.binanceBase });
   const higher = aggregateCandles(r.candles, 4);
   const trend = trendOf(higher.length >= 60 ? higher : r.candles)?.value ?? null;
   const setup = analyzeSetup(r.candles, higher, { ...svc.setupContext(coin), btcTrend: coin === "BTC" ? null : o.btcTrend }, { timeframe: "1 h" });

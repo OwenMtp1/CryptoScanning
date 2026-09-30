@@ -112,3 +112,22 @@ Points vérifiés sans problème :
 - les réglages sont validés et bornés côté bot ;
 - aucune permission de trading ni de retrait n'existe ;
 - aucun ordre n'est passé.
+
+## 7. Correctifs suivants
+
+- **Binance sur Discord.** Deux causes ont été corrigées :
+  - **Seuil caché.** L'ancienne variable `DISCORD_MIN_STRENGTH` (souvent réglée à 70) filtrait en silence, en plus du
+    panneau, tous les signaux plus faibles, dont la plupart de ceux de Binance. Elle est désormais **ignorée** : seule
+    la « force minimale » du panneau Discord compte.
+  - **Accès refusé.** Binance peut refuser l'adresse Cloudflare du bot. Le bot essaie maintenant 8 accès Binance à tour
+    de rôle (`data-api.binance.vision`, `api.binance.com`, `api-gcp`, `api1` à `api4`, `www.binance.com`) et retient
+    celui qui répond.
+  - **Diagnostic.** La page Discord affiche « Ce que le bot lit en ce moment » : l'accès Binance utilisé ou le motif du
+    refus, et les envois des dernières 24 h par source.
+- **Page Levier allégée.** Plus de cartes néon :
+  - un encadré **« À surveiller »** avec les 6 marchés les plus intéressants (indication LONG / SHORT, ou mouvement
+    anormal net) ;
+  - le **classement de tous les marchés** en dessous (lecture LONG / SHORT, puis mouvements anormaux), avec filtres et
+    recherche.
+- **Courbe au clic.** Un clic sur une crypto (Flux, Levier, Univers, Setups…) ouvre sa fiche avec la courbe
+  (1 h à 1 an) en haut, et un lien vers la page Courbe complète (leviers, setup).

@@ -2,6 +2,7 @@
 
 import type { Direction, IntelSource, NewsItem } from "@radar/core";
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from "react";
+import { CoinChart } from "@/components/CoinChart";
 import { ScoreBar } from "@/components/ui";
 import { getJson } from "@/lib/api";
 import { fmtPct } from "@/lib/format";
@@ -63,7 +64,7 @@ function CoinDrawer({ symbol, onClose }: { symbol: string; onClose: () => void }
   const r = d?.row;
   const now = Date.now();
   return (
-    <div className="fixed inset-0 z-40 flex justify-end bg-black/50" onClick={onClose}>
+    <div className="fixed inset-0 z-50 flex justify-end bg-black/50" onClick={onClose}>
       <aside className="h-full w-full max-w-xl overflow-y-auto border-l border-slate-800 bg-[#0a1020] p-4 shadow-2xl" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-start justify-between gap-3">
           <div>
@@ -80,7 +81,13 @@ function CoinDrawer({ symbol, onClose }: { symbol: string; onClose: () => void }
             Fermer ✕
           </button>
         </div>
-        {err && <p className="mt-3 text-sm text-rose-400">{err}</p>}
+        <div className="mt-4">
+          <CoinChart coin={symbol} />
+          <a href={`#courbe?coin=${encodeURIComponent(symbol)}`} onClick={onClose} className="mt-2 inline-block rounded bg-slate-800 px-3 py-1.5 text-xs text-sky-300 hover:bg-slate-700">
+            📈 Ouvrir la page Courbe (leviers, setup trader)
+          </a>
+        </div>
+        {err && !d && <p className="mt-3 text-xs text-slate-500">Pas encore de fiche détaillée pour {symbol} sur ce site.</p>}
         {r && (
           <div className="num mt-4 grid grid-cols-3 gap-3 text-sm">
             <Mini label="Prix" value={fmtUsd(r.priceUsd)} />

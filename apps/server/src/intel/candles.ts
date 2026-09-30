@@ -18,8 +18,8 @@ const CB: Record<CandleInterval, [string, number]> = {
   "1d": ["ONE_DAY", 1],
 };
 
-export const binanceKlinesUrl = (coin: string, interval: CandleInterval, limit: number, quote = "USDT") =>
-  `https://data-api.binance.vision/api/v3/klines?symbol=${encodeURIComponent(coin.toUpperCase() + quote)}&interval=${interval}&limit=${Math.min(1000, Math.max(1, limit))}`;
+export const binanceKlinesUrl = (coin: string, interval: CandleInterval, limit: number, quote = "USDT", base = "https://data-api.binance.vision") =>
+  `${base}/api/v3/klines?symbol=${encodeURIComponent(coin.toUpperCase() + quote)}&interval=${interval}&limit=${Math.min(1000, Math.max(1, limit))}`;
 
 export function coinbaseCandlesUrl(coin: string, interval: CandleInterval, limit: number, now = Date.now()) {
   const [gran, group] = CB[interval];
@@ -37,13 +37,13 @@ export interface CandleResult {
 }
 
 /** Load `limit` candles of `coin` (USD quoted), newest last. Throws when no source has the coin. */
-export async function loadCandles(get: (url: string) => Promise<string>, coin: string, interval: CandleInterval, limit: number, opts: { skipBinance?: boolean; now?: number } = {}): Promise<CandleResult> {
+export async function loadCandles(get: (url: string) => Promise<string>, coin: string, interval: CandleInterval, limit: number, opts: { skipBinance?: boolean; now?: number; binanceBase?: string } = {}): Promise<CandleResult> {
   const errors: string[] = [];
   const c = coin.toUpperCase();
   if (!opts.skipBinance) {
     for (const quote of c === "USDT" ? ["USDC"] : ["USDT", "USDC"]) {
       try {
-        const cs = parseBinanceKlines(JSON.parse(await get(binanceKlinesUrl(c, interval, limit, quote))));
+        const cs = parseBinanceKlines(JSON.parse(await get(binanceKlinesUrl(c, interval, limit, quote, opts.binanceBase))));
         if (cs.length >= Math.min(30, limit)) return { candles: cs, source: "Binance", pair: `${c}/${quote}` };
         errors.push(`Binance ${c}${quote} : trop peu de données`);
       } catch (e) {

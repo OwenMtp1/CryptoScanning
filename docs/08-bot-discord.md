@@ -30,8 +30,7 @@ quand ton ordinateur et ton téléphone sont éteints :
   - les signaux **neutres** (par exemple un volume anormal sans direction) vont dans le salon de `DISCORD_WEBHOOK_NEUTRAL`
     (ou `DISCORD_WEBHOOK_URL`, l'ancien nom, qui marche toujours) ;
   - si tu n'as mis que les salons haussier et baissier, ils vont **dans les deux**, précédés de ⚪.
-- `DISCORD_MIN_STRENGTH` permet de remettre un seuil si c'est trop bavard. Si tu l'avais mise, supprime-la pour tout
-  recevoir.
+- `DISCORD_MIN_STRENGTH` est ignorée : le seuil se règle uniquement dans la page Discord du site (« Force minimale »).
 - Jamais de `@everyone`.
 
 ## Mise en place (≈ 10 minutes)
@@ -71,7 +70,7 @@ Dans le worker `crypto-radar-discord` → **Settings** → **Variables and Secre
 | **Secret** (facultatif) | `DISCORD_WEBHOOK_BULLISH` | webhook d'un salon réservé aux signaux **haussiers** |
 | **Secret** (facultatif) | `DISCORD_WEBHOOK_BEARISH` | webhook d'un salon réservé aux signaux **baissiers** |
 | **Secret** (facultatif) | `RELAY_KEY` | un code que tu inventes (au moins 16 caractères) pour le relais site → Discord |
-| Text (facultatif) | `DISCORD_MIN_STRENGTH` | seuil d'alerte immédiate, `70` par défaut (monte à `80` si c'est trop bavard) |
+| — | `DISCORD_MIN_STRENGTH` | ancienne variable, **ignorée** (tu peux la supprimer) | la force minimale se règle dans la page Discord du site |
 | Text (facultatif) | `DISCORD_ROLE_ID` | identifiant d'un rôle Discord à mentionner sur les signaux ≥ 90 |
 
 Clique sur **Save / Deploy**.
@@ -119,7 +118,7 @@ par le bot n'est donc envoyé qu'une fois. Sans le bon code, personne ne peut é
 | `SITE_URL non configurée` | ajoute `SITE_URL` (sans `/` à la fin, ce n'est pas grave s'il y en a un) |
 | Erreurs CoinGecko `(amont 429)` | ajoute la clé CoinGecko **sur le site** (projet Pages), pas sur le worker |
 | Erreur de déploiement « name mismatch » | le nom du worker doit être exactement `crypto-radar-discord` |
-| Trop de messages | augmente `DISCORD_MIN_STRENGTH` (80 ou 85) |
+| Trop de messages | monte la « force minimale » dans la page Discord du site (par ex. 60 ou 70) |
 
 ## Coût et limites
 
