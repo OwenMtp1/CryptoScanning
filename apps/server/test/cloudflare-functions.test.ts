@@ -70,8 +70,8 @@ describe("Cloudflare function /api/cg", () => {
 
 describe("Cloudflare function /api/news", () => {
   it("lists feeds and proxies only whitelisted ones", async () => {
-    const list = (await (await newsList()).json()) as { feeds: { id: string }[] };
-    expect(list.feeds.filter((f: { kind?: string }) => f.kind !== "social").length).toBe(7); // CryptoSlate refuses Cloudflare
+    const list = (await (await newsList()).json()) as { feeds: { id: string; kind?: string }[] };
+    expect(list.feeds.filter((f) => f.kind !== "social").length).toBe(7); // CryptoSlate refuses Cloudflare
     const r = await call(newsFeed, "https://x/api/news/decrypt", { id: "decrypt" });
     expect(r.status).toBe(200);
     expect(upstream[0]!.url).toBe("https://decrypt.co/feed");

@@ -115,8 +115,8 @@ describe("Discord worker", () => {
     const sig = { id: "b1", ts: Date.now(), coin: "SOLX", kind: "PUMP_EARLY", direction: "bullish", source: "binance", strength: 88, title: "SOLX décolle : +9 % en 5 min", reasons: ["r"], priceUsd: 1.2, url: "https://www.binance.com/en/trade/SOLX_USDT" };
     const relay = (key: string, signals: unknown[]) => obj.fetch(new Request("https://radar/relay", { method: "POST", headers: { "x-relay-key": key }, body: JSON.stringify({ signals }) }));
     expect((await relay("wrong", [sig])).status).toBe(401);
-    const r = (await (await relay("s3cret-code", [sig, { ...sig, id: "bad", coin: "<script>" }, { ...sig, id: "old", ts: Date.now() - 3_600_000 }])).json()) as { accepted: number; rejected: number };
-    expect(r).toMatchObject({ accepted: 1, rejected: 2 });
+    const r = (await (await relay("s3cret-code", [sig, { ...sig, id: "bad", coin: "<script>" }, { ...sig, id: "old", ts: Date.now() - 3_600_000 }])).json()) as { accepted: number; rejected: number; reasons: Record<string, number> };
+    expect(r).toMatchObject({ accepted: 1, rejected: 2, reasons: { format: 1, "trop ancien": 1 } });
     expect(posted).toHaveLength(2);
     expect(posted[1]!.body).toContain("SOLX décolle");
     await relay("s3cret-code", [{ ...sig, id: "b2" }]); // same coin/direction within 1 h → not re-alerted
@@ -194,6 +194,36 @@ describe("Discord worker", () => {
     extraProducts = [];
     perps = [];
     btc1h = 0;
+  });
+
+  it("neutral signals reach Discord even without a neutral channel; long titles and special symbols are accepted", async () => {
+    vi.useFakeTimers({ now: Date.UTC(2026, 8, 15, 12, 0), toFake: ["Date"] });
+    const byHook: Record<string, string[]> = {};
+    vi.stubGlobal("fetch", vi.fn(async (u: string, i?: { method?: string; body?: string }) => {
+      if (u.startsWith("https://discord.com/")) (byHook[u.split("/")[5]!] ??= []).push(i?.body ?? "");
+      return fakeFetch(u, i);
+    }));
+    const st = storage();
+    const env = { RADAR: {} as never, DISCORD_WEBHOOK_BULLISH: "https://discord.com/api/webhooks/1/up", DISCORD_WEBHOOK_BEARISH: "https://discord.com/api/webhooks/2/down", SITE_URL: SITE, RELAY_KEY: "k-123456789012345" };
+    const obj = new RadarState({ storage: st } as never, env);
+    price = 1;
+    await obj.fetch(new Request("https://radar/scan"));
+    const base = { ts: Date.now(), coinName: null, source: "dex", strength: 40, reasons: [], priceUsd: null, url: null };
+    const r = (await (
+      await obj.fetch(
+        new Request("https://radar/relay", {
+          method: "POST",
+          headers: { "x-relay-key": "k-123456789012345" },
+          body: JSON.stringify({ signals: [{ ...base, id: "n1", coin: "SOLX", kind: "VOLUME_SURGE", direction: "neutral", title: "SOLX volume x6" }, { ...base, id: "d1", coin: "$Ωmega", kind: "DEX_TRENDING_PUMP", direction: "bullish", title: "T".repeat(400) }] }),
+        }),
+      )
+    ).json()) as { accepted: number };
+    expect(r.accepted).toBe(2);
+    const up = byHook["1"]!.slice(1).map((b) => JSON.parse(b).embeds[0].title);
+    const down = byHook["2"]!.slice(1).map((b) => JSON.parse(b).embeds[0].title);
+    expect(up.some((t: string) => t.startsWith("⚪ SOLX volume"))).toBe(true); // neutral → both channels
+    expect(down.some((t: string) => t.startsWith("⚪ SOLX volume"))).toBe(true);
+    expect(up.some((t: string) => t.length === 256)).toBe(true); // long title cut, not refused
   });
 
   it("prefs helpers", () => {

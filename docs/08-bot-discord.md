@@ -28,7 +28,7 @@ quand ton ordinateur et ton téléphone sont éteints :
   regroupe temporairement jusqu'à 5 signaux par message pour ne pas prendre de retard.
 - **Salons :**
   - les signaux **neutres** (par exemple un volume anormal sans direction) vont dans le salon de `DISCORD_WEBHOOK_URL` ;
-  - si tu n'as mis que les salons haussier et baissier, les signaux neutres ne sont pas envoyés.
+  - si tu n'as mis que les salons haussier et baissier, ils vont **dans les deux**, précédés de ⚪.
 - `DISCORD_MIN_STRENGTH` permet de remettre un seuil si c'est trop bavard. Si tu l'avais mise, supprime-la pour tout
   recevoir.
 - Jamais de `@everyone`.
@@ -98,6 +98,12 @@ Chaque salon reçoit alors un message de bienvenue qui dit ce qu'il va recevoir,
 3. **Sur ton site**, page **Sources** → carte Discord : colle le code dans « code de relais » → **Activer**.
 
 Le code n'est gardé que dans ce navigateur. Sur chaque appareil où tu veux relayer, il faut l'entrer une fois.
+
+- **Sans code, ou pendant une coupure :** le site garde les signaux jusqu'à 40 min et les envoie dès que possible. Un envoi
+  qui échoue est retenté automatiquement.
+- **Suivi :** la carte Discord de la page Sources affiche les signaux transmis, ceux en attente et ceux refusés (avec la
+  raison).
+- **Indications de levier et signaux du bot :** ils ne dépendent pas du code. Le bot les envoie lui-même, 24 h/24.
 
 Tant que la page est ouverte, ses signaux partent vers Discord en quelques secondes. Ils passent par les mêmes règles
 que le bot : seuil, une alerte par heure et par crypto, salons haussier et baissier. Un même mouvement vu par le site et

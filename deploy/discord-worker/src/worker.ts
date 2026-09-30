@@ -153,7 +153,7 @@ interface Status {
   market?: unknown;
   sources: Record<string, string>;
   errors: string[];
-  relay: { configured: boolean; received: number; lastAt: number | null };
+  relay: { configured: boolean; received: number; lastAt: number | null; rejected?: number };
   config: { siteUrl: string | null; webhookConfigured: boolean; minStrength: number };
   discord: unknown;
 }
@@ -166,24 +166,31 @@ function sameSecret(a: string, b: string): boolean {
   return d === 0;
 }
 
-/** Validate a relayed signal: strict shape, bounded sizes, recent timestamp. */
-export function sanitizeRelayed(x: unknown, now: number): IntelSignal | null {
-  if (!x || typeof x !== "object") return null;
+/** Why a relayed signal was refused (counted and shown on the site). */
+export type RelayReject = "format" | "type" | "sens" | "force" | "trop ancien";
+
+/**
+ * Validate a relayed signal: strict shape, bounded sizes (long texts are cut,
+ * not refused), and a timestamp within 45 min (the site keeps a backlog while
+ * it cannot send; a phone clock can also be a little off).
+ */
+export function sanitizeRelayed(x: unknown, now: number): IntelSignal | RelayReject {
+  if (!x || typeof x !== "object") return "format";
   const s = x as Record<string, unknown>;
-  const str = (v: unknown, max: number) => (typeof v === "string" && v.length > 0 && v.length <= max ? v : null);
-  const id = str(s.id, 64);
-  const coin = str(s.coin, 20);
-  const title = str(s.title, 300);
-  if (!id || !coin || !/^[A-Z0-9._-]+$/.test(coin) || !title) return null;
-  if (!KINDS.has(s.kind as IntelKind) || !SOURCES.has(s.source as IntelSource)) return null;
-  if (s.direction !== "bullish" && s.direction !== "bearish" && s.direction !== "neutral") return null;
+  const str = (v: unknown, max: number) => (typeof v === "string" && v.trim().length > 0 ? v.slice(0, max) : null);
+  const id = typeof s.id === "string" && s.id.length > 0 && s.id.length <= 80 ? s.id : null;
+  const coin = typeof s.coin === "string" ? s.coin.trim().toUpperCase().slice(0, 24) : "";
+  const title = str(s.title, 256);
+  if (!id || !coin || !/^[\p{L}\p{N}._$-]+$/u.test(coin) || !title) return "format";
+  if (!KINDS.has(s.kind as IntelKind) || !SOURCES.has(s.source as IntelSource)) return "type";
+  if (s.direction !== "bullish" && s.direction !== "bearish" && s.direction !== "neutral") return "sens";
   const strength = Number(s.strength);
   const ts = Number(s.ts);
-  if (!Number.isFinite(strength) || strength < 0 || strength > 100) return null;
-  if (!Number.isFinite(ts) || Math.abs(now - ts) > 10 * 60_000) return null;
-  const url = typeof s.url === "string" && /^https:\/\/[^\s]{1,300}$/.test(s.url) ? s.url : null;
+  if (!Number.isFinite(strength) || strength < 0 || strength > 100) return "force";
+  if (!Number.isFinite(ts) || Math.abs(now - ts) > 45 * 60_000) return "trop ancien";
+  const url = typeof s.url === "string" && /^https:\/\/[^\s]{1,500}$/.test(s.url) ? s.url : null;
   const priceUsd = typeof s.priceUsd === "number" && Number.isFinite(s.priceUsd) ? s.priceUsd : null;
-  const reasons = Array.isArray(s.reasons) ? s.reasons.filter((r): r is string => typeof r === "string").slice(0, 8).map((r) => r.slice(0, 300)) : [];
+  const reasons = Array.isArray(s.reasons) ? s.reasons.filter((r): r is string => typeof r === "string").slice(0, 10).map((r) => r.slice(0, 300)) : [];
   return { id: `site-${id}`, ts, coin, coinName: str(s.coinName, 80), kind: s.kind as IntelKind, direction: s.direction, source: s.source as IntelSource, strength: Math.round(strength), title, reasons, metrics: {}, priceUsd, url };
 }
 
@@ -208,7 +215,7 @@ export class RadarState {
     warm: boolean;
     welcomed: Set<string>;
     lastFullRunAt: number | null;
-    relay: { received: number; lastAt: number | null };
+    relay: { received: number; lastAt: number | null; rejected?: number };
     sentLog: number[];
   } | null = null;
   private signalsThisRun = 0;
@@ -300,7 +307,7 @@ export class RadarState {
         ...(role && /^\d+$/.test(role) ? { mentionRoleId: role } : {}),
       },
     });
-    const meta = (await st.get<{ warm?: boolean; welcomed?: string[]; lastFullRunAt?: number; relay?: { received: number; lastAt: number | null }; sentLog?: number[]; seen?: Record<string, number> }>("meta")) ?? {};
+    const meta = (await st.get<{ warm?: boolean; welcomed?: string[]; lastFullRunAt?: number; relay?: { received: number; lastAt: number | null; rejected?: number }; sentLog?: number[]; seen?: Record<string, number> }>("meta")) ?? {};
 
     // Channel routing: one webhook per direction when configured, the general webhook for the rest,
     // and an optional leverage channel that takes the leveraged-market kinds.
@@ -309,8 +316,9 @@ export class RadarState {
     const general = env.DISCORD_WEBHOOK_URL?.trim() || null;
     const lev = env.DISCORD_WEBHOOK_LEVERAGE?.trim() || null;
     const specs: { id: Channel["id"]; label: string; url: string | null; directions: Channel["directions"] }[] = [
-      { id: "bullish", label: "haussier", url: bull, directions: ["bullish"] },
-      { id: "bearish", label: "baissier", url: bear, directions: ["bearish"] },
+      // Without a general channel, neutral signals (a move that can break either way) go to both.
+      { id: "bullish", label: "haussier", url: bull, directions: general ? ["bullish"] : ["bullish", "neutral"] },
+      { id: "bearish", label: "baissier", url: bear, directions: general ? ["bearish"] : ["bearish", "neutral"] },
       { id: "general", label: "général", url: general, directions: cfg.discord.directions.filter((d) => !(d === "bullish" && bull) && !(d === "bearish" && bear)) },
       { id: "leverage", label: "levier", url: lev, directions: ["bullish", "bearish", "neutral"] },
     ];
@@ -345,7 +353,7 @@ export class RadarState {
       warm: !!meta.warm,
       welcomed: new Set(meta.welcomed ?? []),
       lastFullRunAt: meta.lastFullRunAt ?? null,
-      relay: meta.relay ?? { received: 0, lastAt: null },
+      relay: meta.relay ?? { received: 0, lastAt: null, rejected: 0 },
       sentLog: (meta.sentLog ?? []).filter((t) => t > Date.now() - 86_400_000),
       svc: null as unknown as IntelService,
     };
@@ -391,8 +399,14 @@ export class RadarState {
     this.signalsThisRun++;
     L.sentLog.push(this.clock);
     const lev = L.channels.find((c) => c.id === "leverage");
-    const targets = lev && LEVERAGE_KINDS.has(s.kind) ? [lev] : L.channels.filter((c) => c.id !== "leverage");
-    for (const c of targets) c.n.consider(s);
+    if (lev && LEVERAGE_KINDS.has(s.kind)) {
+      lev.n.consider(s);
+      return;
+    }
+    const targets = L.channels.filter((c) => c.id !== "leverage" && c.directions.includes(s.direction));
+    for (const c of targets) c.n.consider(s.direction === "neutral" && c.id !== "general" ? { ...s, title: `⚪ ${s.title}`.slice(0, 256) } : s);
+    // Nowhere to go (e.g. only a leverage channel): the leverage channel gets it rather than nothing.
+    if (!targets.length && lev) lev.n.consider(s);
   }
 
   /** New pairs / coins compared with everything seen before (the first pass only learns). */
@@ -610,16 +624,20 @@ export class RadarState {
   }
 
   /** Signals relayed by the live site (e.g. Binance real time). */
-  private async relay(body: unknown): Promise<{ ok: boolean; accepted: number; rejected: number }> {
+  private async relay(body: unknown): Promise<{ ok: boolean; accepted: number; rejected: number; reasons: Partial<Record<RelayReject, number>>; queued: number }> {
     this.clock = Date.now();
     this.errors = [];
     this.signalsThisRun = 0;
     const L = await this.load();
-    const list = Array.isArray((body as { signals?: unknown })?.signals) ? ((body as { signals: unknown[] }).signals.slice(0, 50)) : [];
+    const list = Array.isArray((body as { signals?: unknown })?.signals) ? (body as { signals: unknown[] }).signals.slice(0, 100) : [];
     let accepted = 0;
+    const reasons: Partial<Record<RelayReject, number>> = {};
     for (const x of list) {
       const s = sanitizeRelayed(x, this.clock);
-      if (!s) continue;
+      if (typeof s === "string") {
+        reasons[s] = (reasons[s] ?? 0) + 1;
+        continue;
+      }
       accepted++;
       L.svc.tracker.track(s, L.svc.engine.priceOf("BTC"));
       if (!L.warm) continue;
@@ -634,7 +652,8 @@ export class RadarState {
       meta: this.meta(L),
       ...(prev ? { status: { ...prev, relay: { configured: true, ...L.relay }, discord: this.discordView(L) } } : {}),
     });
-    return { ok: true, accepted, rejected: list.length - accepted };
+    L.relay.rejected = (L.relay.rejected ?? 0) + (list.length - accepted);
+    return { ok: true, accepted, rejected: list.length - accepted, reasons, queued: L.channels.reduce((a, c) => a + (c.n.view().queued ?? 0), 0) };
   }
 
   private async flushDiscord() {

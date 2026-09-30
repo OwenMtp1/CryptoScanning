@@ -129,7 +129,7 @@ export class DiscordNotifier {
         const mention = mentionFor(group);
         this.queue.push(...packMessages(group.map((s) => signalEmbed(s, this.o.hitRateOf(s))), { mentionRole: mention, content: mention ? "Signal fort" : undefined }));
       }
-      if (this.queue.length > 500) this.queue.splice(0, this.queue.length - 500);
+      if (this.queue.length > 3000) this.queue.splice(0, this.queue.length - 3000);
       return;
     }
     if (this.sentLastHour(now) + this.queue.length >= c.maxMessagesPerHour) {
@@ -237,7 +237,7 @@ export class DiscordNotifier {
   /** Persistable state (for a scheduled worker that restarts between runs). */
   exportState() {
     const dayAgo = this.now() - 86_400_000;
-    return { lastCoinAt: Object.fromEntries([...this.lastCoinAt].filter(([, t]) => t > dayAgo)), sentAt: [...this.sentAt], lastSentAt: this.lastSentAt, lastDigestAt: this.lastDigestAt, digest: this.digest.slice(-200), queue: this.queue.slice(0, 300), lastError: this.lastError, pausedUntil: this.pausedUntil };
+    return { lastCoinAt: Object.fromEntries([...this.lastCoinAt].filter(([, t]) => t > dayAgo)), sentAt: [...this.sentAt], lastSentAt: this.lastSentAt, lastDigestAt: this.lastDigestAt, digest: this.digest.slice(-200), queue: this.queue.slice(0, 1500), lastError: this.lastError, pausedUntil: this.pausedUntil };
   }
 
   importState(s: Partial<ReturnType<DiscordNotifier["exportState"]>> | null | undefined) {

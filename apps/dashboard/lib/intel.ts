@@ -97,7 +97,7 @@ export interface SourcesResponse {
       message?: string;
     };
   } | null;
-  relay?: { keySet: boolean; sent: number; lastOkAt: number | null; lastError: string | null };
+  relay?: { keySet: boolean; sent: number; rejected: number; queued: number; rejectReasons: Record<string, number>; lastOkAt: number | null; lastError: string | null };
 }
 
 export const KIND_LABEL: Record<IntelKind, string> = {

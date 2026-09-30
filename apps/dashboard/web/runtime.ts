@@ -144,38 +144,56 @@ export async function startWeb(): Promise<DemoBackend> {
       return "";
     }
   };
-  const relay = { sent: 0, lastOkAt: null as number | null, lastError: null as string | null };
-  let relayQueue: unknown[] = [];
-  // Every signal shown on the site is relayed (no strength threshold).
+  const relay = { sent: 0, rejected: 0, lastOkAt: null as number | null, lastError: null as string | null, queued: 0, rejectReasons: {} as Record<string, number> };
+  type Relayed = { id: string; ts: number; [k: string]: unknown };
+  let relayQueue: Relayed[] = [];
+  let relayPauseUntil = 0;
+  let sending = false;
+  // EVERY signal shown on the site goes into the queue — even before the relay code is entered:
+  // the backlog (up to 40 min) is sent as soon as the code is activated.
   svc.subscribe((b) => {
-    if (!readKey()) return;
-    for (const s of b.signals) relayQueue.push({ id: s.id, ts: s.ts, coin: s.coin, coinName: s.coinName, kind: s.kind, direction: s.direction, source: s.source, strength: s.strength, title: s.title, reasons: s.reasons.slice(0, 8), priceUsd: s.priceUsd, url: s.url });
+    for (const s of b.signals) relayQueue.push({ id: s.id, ts: s.ts, coin: s.coin, coinName: s.coinName, kind: s.kind, direction: s.direction, source: s.source, strength: s.strength, title: s.title, reasons: s.reasons.slice(0, 10), priceUsd: s.priceUsd, url: s.url });
   });
   const postRelay = async (signals: unknown[], key = readKey()) => {
-    const r = await fetchText("/api/discord/relay", { method: "POST", headers: { "content-type": "application/json", "x-relay-key": key }, body: JSON.stringify({ signals }), timeoutMs: 15_000 });
+    const r = await fetchText("/api/discord/relay", { method: "POST", headers: { "content-type": "application/json", "x-relay-key": key }, body: JSON.stringify({ signals }), timeoutMs: 20_000 });
     const body = (() => {
       try {
-        return JSON.parse(r.text) as { ok?: boolean; error?: string; accepted?: number };
+        return JSON.parse(r.text) as { ok?: boolean; error?: string; accepted?: number; rejected?: number; reasons?: Record<string, number> };
       } catch {
         return {};
       }
     })();
-    if (r.status !== 200 || !body.ok) throw new Error(body.error ?? `HTTP ${r.status}`);
+    if (r.status !== 200 || !body.ok) throw Object.assign(new Error(body.error ?? `HTTP ${r.status}`), { status: r.status });
     return body;
   };
-  setInterval(() => {
-    if (!relayQueue.length) return;
-    const batch = relayQueue.splice(0, 50);
-    if (relayQueue.length > 1000) relayQueue = relayQueue.slice(-1000);
-    postRelay(batch).then(
-      (b) => {
-        relay.sent += b.accepted ?? 0;
-        relay.lastOkAt = Date.now();
-        relay.lastError = null;
-      },
-      (e: Error) => (relay.lastError = e.message),
-    );
-  }, 2000);
+  const pumpRelay = async () => {
+    const now = Date.now();
+    relayQueue = relayQueue.filter((x) => now - x.ts < 40 * 60_000).slice(-2000);
+    relay.queued = relayQueue.length;
+    if (sending || !relayQueue.length || now < relayPauseUntil || !readKey()) return;
+    sending = true;
+    const batch = relayQueue.slice(0, 100);
+    try {
+      const b = await postRelay(batch);
+      // Only remove what was actually delivered to the bot.
+      const sentIds = new Set(batch.map((x) => x.id));
+      relayQueue = relayQueue.filter((x) => !sentIds.has(x.id));
+      relay.sent += b.accepted ?? 0;
+      relay.rejected += b.rejected ?? 0;
+      for (const [k, v] of Object.entries(b.reasons ?? {})) relay.rejectReasons[k] = (relay.rejectReasons[k] ?? 0) + v;
+      relay.lastOkAt = Date.now();
+      relay.lastError = null;
+    } catch (e) {
+      // Kept in the queue and retried: network hiccup, bot busy, Discord limits…
+      const status = (e as { status?: number }).status;
+      relay.lastError = (e as Error).message;
+      relayPauseUntil = Date.now() + (status === 401 ? 60_000 : 10_000);
+    } finally {
+      sending = false;
+      relay.queued = relayQueue.length;
+    }
+  };
+  setInterval(() => void pumpRelay(), 2000);
   let botStatus: unknown = null;
   const pollBot = () =>
     fetchText("/api/discord/status", { timeoutMs: 15_000 }).then(

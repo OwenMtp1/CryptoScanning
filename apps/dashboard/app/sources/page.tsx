@@ -288,10 +288,20 @@ function WebDiscord({ d }: { d: SourcesResponse }) {
           État :{" "}
           {d.relay?.keySet ? (
             <span className={d.relay.lastError ? "text-amber-300" : "text-emerald-400"}>
-              activé · {d.relay.sent} signal(s) relayé(s){d.relay.lastError ? ` · erreur : ${d.relay.lastError}` : ""}
+              activé · {d.relay.sent} signal(s) transmis au bot
+              {d.relay.queued ? ` · ${d.relay.queued} en attente` : " · rien en attente"}
+              {d.relay.lastError ? ` · erreur : ${d.relay.lastError} (nouvel essai automatique)` : ""}
             </span>
           ) : (
-            <span className="text-slate-500">désactivé</span>
+            <span className="text-amber-300">désactivé{d.relay?.queued ? ` · ${d.relay.queued} signal(s) gardé(s) en attente : ils partiront dès que tu actives le code` : ""}</span>
+          )}
+          {!!d.relay?.rejected && (
+            <span className="block text-amber-300">
+              {d.relay.rejected} signal(s) refusé(s) par le bot :{" "}
+              {Object.entries(d.relay.rejectReasons ?? {})
+                .map(([k, v]) => `${v} « ${k} »`)
+                .join(", ")}
+            </span>
           )}
         </p>
         <div className="mt-2 flex flex-wrap gap-2">
