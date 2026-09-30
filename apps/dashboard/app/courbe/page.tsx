@@ -4,6 +4,7 @@ import { liquidationPrice, type Candle, type TradeSetup } from "@radar/core";
 import { useEffect, useMemo, useState } from "react";
 import { PriceChart, type PriceBand, type PriceLevel } from "@/components/PriceChart";
 import { PositionCalculator, SetupPlan } from "@/components/Setup";
+import { TV_MARKETS, TradingViewChart, type TvMarket } from "@/components/TradingViewChart";
 import { Card } from "@/components/ui";
 import { getJson } from "@/lib/api";
 import { fmtPct, fmtPrice } from "@/lib/format";
@@ -19,6 +20,17 @@ const RANGES = [
 type Range = (typeof RANGES)[number][0];
 const LEVERAGES = [2, 3, 5, 10, 20, 25, 50, 100];
 const MOVES = [-10, -5, -2, -1, 1, 2, 5, 10];
+/** Candle sources of the Radar chart (auto = first one that has the coin, in this order). */
+const SOURCES = [
+  ["auto", "Auto (la 1re qui a la crypto)"],
+  ["binance", "Binance"],
+  ["coinbase", "Coinbase"],
+  ["okx", "OKX"],
+  ["bybit", "Bybit"],
+  ["kucoin", "KuCoin"],
+  ["mexc", "MEXC"],
+  ["gate", "Gate.io"],
+] as const;
 const MAINT = 0.5; // % maintenance margin (approximate, varies by platform)
 
 const COLOR = { entry: "#94a3b8", liqLong: "#fb7185", liqShort: "#f59e0b", stop: "#f43f5e", target: "#34d399", zone: "#38bdf8" };
@@ -43,6 +55,9 @@ export default function CourbePage() {
   const [data, setData] = useState<{ candles: Candle[]; source: string; pair: string } | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [tool, setTool] = useState<"radar" | "tv">("radar");
+  const [src, setSrc] = useState<string>("auto");
+  const [tvMarket, setTvMarket] = useState<TvMarket>("auto");
   const [coins, setCoins] = useState<{ symbol: string; name: string }[]>([]);
   const [showLev, setShowLev] = useState(false);
   const [showSetup, setShowSetup] = useState(true);
@@ -71,7 +86,7 @@ export default function CourbePage() {
     let live = true;
     const load = () => {
       setLoading(true);
-      getJson<{ candles: Candle[]; source: string; pair: string }>(`/api/web/candles?coin=${encodeURIComponent(coin)}&range=${range}`).then(
+      getJson<{ candles: Candle[]; source: string; pair: string }>(`/api/web/candles?coin=${encodeURIComponent(coin)}&range=${range}&src=${src}`).then(
         (r) => {
           if (!live) return;
           setData(r);
@@ -92,7 +107,7 @@ export default function CourbePage() {
       live = false;
       clearInterval(t);
     };
-  }, [coin, range]);
+  }, [coin, range, src]);
 
   useEffect(() => {
     if (!showSetup) return;
@@ -180,6 +195,46 @@ export default function CourbePage() {
               </button>
             ))}
           </div>
+          <div className="flex flex-wrap items-end gap-2 text-xs text-slate-400">
+            <div>
+              Outil de courbe
+              <div className="mt-1 flex gap-1">
+                {(
+                  [
+                    ["radar", "Radar (leviers + setup)"],
+                    ["tv", "TradingView"],
+                  ] as const
+                ).map(([k, l]) => (
+                  <button key={k} type="button" onClick={() => setTool(k)} className={`rounded px-3 py-2 text-sm ${tool === k ? "bg-violet-600 text-white" : "bg-slate-800 text-slate-300 hover:bg-slate-700"}`}>
+                    {l}
+                  </button>
+                ))}
+              </div>
+            </div>
+            {tool === "radar" ? (
+              <label>
+                Source des prix
+                <select value={src} onChange={(e) => setSrc(e.target.value)} className="mt-1 block rounded border border-slate-700 bg-slate-900 px-2 py-2 text-sm text-slate-100">
+                  {SOURCES.map(([k, l]) => (
+                    <option key={k} value={k}>
+                      {l}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ) : (
+              <label>
+                Marché TradingView
+                <select value={tvMarket} onChange={(e) => setTvMarket(e.target.value as TvMarket)} className="mt-1 block rounded border border-slate-700 bg-slate-900 px-2 py-2 text-sm text-slate-100">
+                  {TV_MARKETS.map(([k, l]) => (
+                    <option key={k} value={k}>
+                      {l}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+          </div>
           <div className="flex flex-wrap gap-4 text-sm">
             <label className="flex items-center gap-2">
               <input type="checkbox" checked={showLev} onChange={(e) => setShowLev(e.target.checked)} className="h-4 w-4" /> Afficher les leviers
@@ -199,8 +254,24 @@ export default function CourbePage() {
           {data && <span className="text-xs text-slate-500">source : {data.source} ({data.pair})</span>}
           {loading && <span className="text-xs text-slate-500">mise à jour…</span>}
         </div>
-        {err && !data ? (
-          <p className="text-sm text-rose-300">Courbe indisponible pour {coin} : {err}</p>
+        {tool === "tv" ? (
+          <>
+            <TradingViewChart coin={coin} market={tvMarket} range={range} height={typeof window !== "undefined" && window.innerWidth < 640 ? 420 : 560} />
+            <p className="mt-1 text-[11px] text-slate-500">
+              Courbe TradingView (outils et indicateurs intégrés, recherche d&apos;une autre crypto en haut à gauche). Les lignes de liquidation et du setup sont tracées sur l&apos;outil « Radar ». Si la crypto n&apos;apparaît pas, change de marché.
+            </p>
+          </>
+        ) : err && !data ? (
+          <>
+            <p className="mb-2 text-sm text-amber-300">
+              {coin} n&apos;est pas sur {src === "auto" ? "nos 7 sources de prix (Binance, Coinbase, OKX, Bybit, KuCoin, MEXC, Gate.io)" : SOURCES.find((x) => x[0] === src)?.[1]} : voici la courbe TradingView.
+            </p>
+            <TradingViewChart coin={coin} market="auto" range={range} height={420} />
+            <details className="mt-1 text-[11px] text-slate-500">
+              <summary>détail</summary>
+              {err}
+            </details>
+          </>
         ) : data ? (
           <PriceChart candles={data.candles} levels={levels} bands={bands} title={`Cours de ${coin}`} />
         ) : (
@@ -332,7 +403,7 @@ export default function CourbePage() {
       {showSetup && (
         <div className="grid gap-4 lg:grid-cols-3">
           <Card title={`🎯 Setup trader sur ${coin} (bougies 1 h + vue 4 h)`} className="lg:col-span-2">
-            {setupErr ? <p className="text-sm text-rose-300">Analyse impossible : {setupErr}</p> : !setup ? <p className="text-sm text-slate-500">Analyse en cours…</p> : s ? <SetupPlan s={s} /> : <p className="text-sm text-slate-400">Pas assez d&apos;historique pour {coin}.</p>}
+            {setupErr ? <p className="text-sm text-slate-400">Analyse impossible : aucune de nos sources de prix n&apos;a l&apos;historique 1 h de {coin}. <span className="text-[11px] text-slate-600">({setupErr})</span></p> : !setup ? <p className="text-sm text-slate-500">Analyse en cours…</p> : s ? <SetupPlan s={s} /> : <p className="text-sm text-slate-400">Pas assez d&apos;historique pour {coin}.</p>}
           </Card>
           {s && (
             <Card title="Taille de position">

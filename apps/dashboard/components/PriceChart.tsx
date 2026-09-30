@@ -34,7 +34,7 @@ function niceTicks(lo: number, hi: number, n = 5): number[] {
   const mag = 10 ** Math.floor(Math.log10(raw));
   const step = ([1, 2, 2.5, 5, 10].find((m) => m * mag >= raw) ?? 10) * mag;
   const out: number[] = [];
-  for (let v = Math.ceil(lo / step) * step; v <= hi + step * 1e-9; v += step) out.push(v);
+  for (let i = Math.ceil(lo / step); i * step <= hi + step * 1e-9; i++) out.push(i * step || 0); // "|| 0": no "-0"
   return out;
 }
 

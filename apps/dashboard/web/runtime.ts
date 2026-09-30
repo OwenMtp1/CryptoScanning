@@ -451,12 +451,14 @@ export async function startWeb(): Promise<DemoBackend> {
         const coin = (u.searchParams.get("coin") ?? "").toUpperCase();
         const range = RANGES[u.searchParams.get("range") ?? "1d"];
         if (!/^[A-Z0-9]{1,20}$/.test(coin) || !range) throw new Error("paramètres invalides");
-        return loadCandles(directGet, coin, range[0], range[1]);
+        const src = u.searchParams.get("src") ?? "auto";
+        if (!/^[a-z]{2,10}$/.test(src)) throw new Error("source invalide");
+        return loadCandles(directGet, coin, range[0], range[1], { extraBase: "", only: src });
       }
       if (u.pathname === "/api/web/setup") {
         const coin = (u.searchParams.get("coin") ?? "").toUpperCase();
         if (!/^[A-Z0-9]{1,20}$/.test(coin)) throw new Error("crypto invalide");
-        const r = await runSetup(directGet, svc, coin, { btcTrend: coin === "BTC" ? null : btc.trend, emit: false });
+        const r = await runSetup(directGet, svc, coin, { btcTrend: coin === "BTC" ? null : btc.trend, emit: false, extraBase: "" });
         return { coin, setup: r.setup, source: r.source, context: svc.setupContext(coin) };
       }
       if (u.pathname === "/api/intel/performance" && u.searchParams.get("scope") === "bot") {

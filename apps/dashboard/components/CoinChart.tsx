@@ -3,6 +3,7 @@
 import type { Candle } from "@radar/core";
 import { useEffect, useState } from "react";
 import { PriceChart } from "@/components/PriceChart";
+import { TradingViewChart } from "@/components/TradingViewChart";
 import { getJson } from "@/lib/api";
 import { fmtPct } from "@/lib/format";
 
@@ -20,6 +21,7 @@ export function CoinChart({ coin, height = 240 }: { coin: string; height?: numbe
   const [range, setRange] = useState<Range>("1d");
   const [data, setData] = useState<{ candles: Candle[]; source: string; pair: string } | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [tv, setTv] = useState(false);
 
   useEffect(() => {
     let live = true;
@@ -37,6 +39,7 @@ export function CoinChart({ coin, height = 240 }: { coin: string; height?: numbe
       clearInterval(t);
     };
   }, [coin, range]);
+  useEffect(() => setTv(false), [coin]);
 
   const first = data?.candles[0]?.c;
   const last = data?.candles.at(-1)?.c;
@@ -50,12 +53,22 @@ export function CoinChart({ coin, height = 240 }: { coin: string; height?: numbe
           </button>
         ))}
         {change !== null && <span className={`num ml-2 text-xs ${change >= 0 ? "text-emerald-400" : "text-rose-400"}`}>{fmtPct(change)}</span>}
-        {data && <span className="ml-auto text-[10px] text-slate-500">{data.source} {data.pair}</span>}
+        <button type="button" onClick={() => setTv((x) => !x)} className={`ml-auto rounded px-2 py-1 text-[11px] ${tv ? "bg-violet-600 text-white" : "bg-slate-800 text-slate-300"}`}>
+          TradingView
+        </button>
+        {data && !tv && <span className="w-full text-right text-[10px] text-slate-500">{data.source} {data.pair}</span>}
       </div>
-      {data ? (
+      {tv ? (
+        <TradingViewChart coin={coin} range={range} height={height + 120} />
+      ) : data ? (
         <PriceChart candles={data.candles} height={height} title={`Cours de ${coin}`} />
       ) : err ? (
-        <p className="rounded bg-slate-900 px-3 py-6 text-center text-xs text-slate-500">Courbe indisponible ({err.includes("→ 404") || err.includes("HTTP 404") ? "disponible sur le site en ligne" : err})</p>
+        err.includes("→ 404") ? (
+          <p className="rounded bg-slate-900 px-3 py-6 text-center text-xs text-slate-500">Courbe disponible sur le site en ligne.</p>
+        ) : (
+          // None of our price sources has this coin: TradingView covers almost everything.
+          <TradingViewChart coin={coin} range={range} height={height + 120} />
+        )
       ) : (
         <div className="animate-pulse rounded bg-slate-900" style={{ height }} />
       )}

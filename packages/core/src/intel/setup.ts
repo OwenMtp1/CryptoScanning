@@ -451,15 +451,18 @@ export function analyzeSetup(primary: Candle[], higher: Candle[] | null, ctx: Se
   let stopDist = structural !== undefined ? Math.abs(mid - structural) + A * 0.3 : A * 1.5;
   stopDist = Math.max(A * 1, Math.min(A * 3, stopDist));
   const stop = mid - sgn * stopDist;
-  const t1 = mid + sgn * stopDist * 1.5;
-  const t2 = mid + sgn * stopDist * 3;
+  // A price cannot fall below zero: short targets are floored at 10 % of the entry.
+  const floorT = (x: number) => (side === "SHORT" ? Math.max(x, mid * 0.1) : x);
+  const rOf = (x: number) => Math.round((Math.abs(x - mid) / stopDist) * 10) / 10;
+  const t1 = floorT(mid + sgn * stopDist * 1.5);
+  const t2 = floorT(mid + sgn * stopDist * 3);
   // The next level in the way caps the realistic target.
   const blocking = side === "LONG" ? resistances.find((x) => x > mid + stopDist * 0.5) : supports.find((x) => x < mid - stopDist * 0.5);
   const mainTarget = blocking !== undefined && Math.abs(blocking - mid) < Math.abs(t2 - mid) ? blocking : t2;
   const riskReward = Math.round((Math.abs(mainTarget - mid) / stopDist) * 10) / 10;
   const targets = [
-    { label: "Objectif 1 (1,5 R)", price: t1, r: 1.5 },
-    { label: "Objectif 2 (3 R)", price: t2, r: 3 },
+    { label: `Objectif 1 (${rOf(t1).toLocaleString("fr-FR")} R)`, price: t1, r: rOf(t1) },
+    { label: `Objectif 2 (${rOf(t2).toLocaleString("fr-FR")} R)`, price: t2, r: rOf(t2) },
   ];
   if (blocking !== undefined && Math.abs(blocking - mid) < Math.abs(t2 - mid)) targets.push({ label: side === "LONG" ? "Résistance sur le chemin" : "Support sur le chemin", price: blocking, r: Math.round((Math.abs(blocking - mid) / stopDist) * 10) / 10 });
   targets.sort((a, b) => a.r - b.r);
@@ -488,6 +491,9 @@ export function analyzeSetup(primary: Candle[], higher: Candle[] | null, ctx: Se
   if (Math.abs(score) < minScore) bias = "WAIT";
   if (trOpposes || htOpposes) bias = "WAIT";
   if (riskReward < minRR) bias = "WAIT";
+  // A stop this far away is not a plan (and one move can wipe the account): wait.
+  const extreme = stopDistPct > 25;
+  if (extreme) bias = "WAIT";
 
   for (const x of factors) if (x.value * sgn > 0.15) reasons.push(`${x.label} : ${x.note}`);
   for (const x of opposing) warnings.push(`contre le plan — ${x.label} : ${x.note}`);
@@ -495,6 +501,7 @@ export function analyzeSetup(primary: Candle[], higher: Candle[] | null, ctx: Se
     if (Math.abs(score) < minScore) warnings.unshift(`signaux pas assez alignés (score ${score}, il faut ±${minScore})`);
     if (trOpposes || htOpposes) warnings.unshift(`${side === "LONG" ? "achat" : "vente"} à contre-tendance : un trader attend`);
     if (riskReward < minRR) warnings.unshift(`rapport gain/risque ${riskReward} trop faible (niveau proche) : pas assez de place jusqu'à l'objectif`);
+    if (extreme) warnings.unshift(`volatilité extrême : le stop serait à ${stopDistPct.toFixed(0)} % du prix, trop large pour un plan`);
   }
   if (e200s !== null && side === "LONG" && price < e200s) warnings.push("sous la moyenne 200 : marché baissier de fond");
   if (e200s !== null && side === "SHORT" && price > e200s) warnings.push("au-dessus de la moyenne 200 : marché haussier de fond");

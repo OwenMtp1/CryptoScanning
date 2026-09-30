@@ -131,3 +131,21 @@ Points vérifiés sans problème :
     recherche.
 - **Courbe au clic.** Un clic sur une crypto (Flux, Levier, Univers, Setups…) ouvre sa fiche avec la courbe
   (1 h à 1 an) en haut, et un lien vers la page Courbe complète (leviers, setup).
+
+## 8. Plus de courbes : TradingView et 5 plateformes de plus
+
+- **Outil TradingView.** Sur la page Courbe, choisis l'outil « TradingView » : la courbe officielle TradingView
+  s'affiche, avec ses outils de dessin et ses indicateurs.
+  - Elle couvre presque toutes les cryptos. Par défaut, c'est l'indice toutes plateformes (`CRYPTO:XXXUSD`).
+  - Tu peux aussi choisir un marché : Binance, Coinbase, OKX, Bybit, KuCoin, MEXC, Gate.io ou Binance perpétuel.
+  - Elle s'affiche dans un cadre isolé : aucun script TradingView ne tourne sur le site, et la CSP n'autorise que les
+    domaines de TradingView en `frame-src`.
+  - Elle sert aussi de secours automatique, dans la fiche d'une crypto et sur la page Courbe, quand aucune de nos
+    sources n'a la crypto.
+- **Outil « Radar ».** C'est lui qui trace les lignes de liquidation et le setup. Il lit désormais :
+  - Binance, puis Coinbase ;
+  - puis **OKX, Bybit, KuCoin, MEXC et Gate.io**, via la fonction `/api/candles` du site (plateformes et paramètres
+    fixes, cache partagé de 30 s à 10 min).
+  - Un menu « Source des prix » permet d'imposer une plateforme.
+- **Setups plus sûrs.** Un objectif de prix n'est jamais négatif. Un setup dont le stop serait à plus de 25 % du prix
+  passe en « attendre » (volatilité extrême).

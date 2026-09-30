@@ -82,3 +82,14 @@ describe("analyzeSetup", () => {
     expect(c.reasons.at(-1)).toContain("pas un conseil");
   });
 });
+
+describe("analyzeSetup safety", () => {
+  it("never proposes a negative target and waits when the stop would be extreme", () => {
+    // Violent, directionless candles around 1: ATR ≈ 40 % of the price.
+    const cs = Array.from({ length: 260 }, (_, i) => ({ t: i * 3_600_000, o: 1, h: 1.2, l: 0.8, c: 1 + Math.sin(i / 9) * 0.1 - i * 0.0005, v: 10 }));
+    const s = analyzeSetup(cs, null, {})!;
+    expect(s.targets.every((t) => t.price > 0)).toBe(true);
+    expect(s.bias).toBe("WAIT");
+    expect(s.warnings.join(" ")).toMatch(/volatilité extrême/);
+  });
+});

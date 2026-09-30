@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // @ts-expect-error plain JS modules deployed as Cloudflare Pages Functions
 import { onRequestGet as cg } from "../../../deploy/cloudflare/functions/api/cg/[[path]].js";
 // @ts-expect-error plain JS
+import { onRequestGet as candles } from "../../../deploy/cloudflare/functions/api/candles.js";
+// @ts-expect-error plain JS
 import { onRequestGet as newsList } from "../../../deploy/cloudflare/functions/api/news/index.js";
 // @ts-expect-error plain JS
 import { onRequestGet as newsFeed } from "../../../deploy/cloudflare/functions/api/news/[id].js";
@@ -78,5 +80,23 @@ describe("Cloudflare function /api/news", () => {
     expect(r.headers.get("content-type")).toContain("xml");
     expect((await call(newsFeed, "https://x/api/news/evil", { id: "https://evil.example" })).status).toBe(404);
     expect(upstream).toHaveLength(1);
+  });
+});
+
+describe("Cloudflare function /api/candles", () => {
+  it("builds the exchange URL from whitelisted parameters only, and caches it", async () => {
+    const r = await call(candles, "https://x/api/candles?ex=okx&coin=pepe&interval=1h&limit=300", {});
+    expect(r.status).toBe(200);
+    expect(upstream[0]!.url).toBe("https://www.okx.com/api/v5/market/candles?instId=PEPE-USDT&bar=1H&limit=300");
+    await call(candles, "https://x/api/candles?ex=okx&coin=PEPE&interval=1h&limit=300", {});
+    expect(upstream).toHaveLength(1);
+    await call(candles, "https://x/api/candles?ex=gate&coin=WIF&interval=1d&limit=365", {});
+    expect(upstream[1]!.url).toBe("https://api.gateio.ws/api/v4/spot/candlesticks?currency_pair=WIF_USDT&interval=1d&limit=365");
+  });
+  it("refuses unknown exchanges, odd symbols and intervals", async () => {
+    for (const q of ["ex=evil&coin=BTC&interval=1h", "ex=okx&coin=BTC%2F..&interval=1h", "ex=okx&coin=BTC&interval=2h", "ex=okx&coin=BTC&interval=1h&limit=5000"]) {
+      expect((await call(candles, `https://x/api/candles?${q}`, {})).status).toBe(400);
+    }
+    expect(upstream).toHaveLength(0);
   });
 });
