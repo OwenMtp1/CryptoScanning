@@ -385,17 +385,28 @@ export async function startWeb(): Promise<DemoBackend> {
     // Same event from the same source already detected by this page within 30 min → one card
     // (it carries the bot's Discord status when the bot sent it). Other sources are all shown.
     const mine = svc.engine.recentSignals({ since: Date.now() - 3 * 3_600_000, limit: 5000 });
+    const localIds = new Set(mine.map((m) => m.id));
     const fresh = r.signals.filter((b) => {
+      // A signal this page relayed comes back as "site-<id>": it carries its Discord status to the local card.
+      if (b.id.startsWith("site-")) {
+        const local = b.id.slice(5);
+        if (localIds.has(local)) {
+          if (b.discord) marks.set(local, b.discord);
+          return false;
+        }
+        // Relayed by another device (phone, other browser): shown here too.
+        b.reasons = [...b.reasons, "relayé depuis un autre appareil"];
+      }
       if (b.discord) marks.set(`bot-${b.id}`, b.discord);
       const twin = mine.find((m) => m.coin === b.coin && m.kind === b.kind && m.direction === b.direction && m.source === b.source && Math.abs(m.ts - b.ts) < 30 * 60_000);
       if (twin && b.discord === "sent" && marks.get(twin.id) !== "sent") marks.set(twin.id, "sent");
       return !twin;
     });
-    svc.engine.addExternal(fresh.map((x) => ({ ...x, id: `bot-${x.id}`, reasons: [...x.reasons, "détecté par le bot 24 h/24"] })));
+    svc.engine.addExternal(fresh.map((x) => ({ ...x, id: `bot-${x.id}`, reasons: x.id.startsWith("site-") ? x.reasons : [...x.reasons, "détecté par le bot 24 h/24"] })));
     botSince = Math.max(botSince, ...r.signals.map((x) => x.ts));
   };
   void pullBotSignals();
-  setInterval(() => void pullBotSignals(), 30_000);
+  setInterval(() => void pullBotSignals(), 15_000);
 
   // ── Trader setups: one coin every 8 s (1 h candles straight from Binance / Coinbase, from this browser).
   const directGet = async (url: string) => {

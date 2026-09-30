@@ -26,6 +26,8 @@ export default function FluxPage() {
   const [paused, setPaused] = useState(false);
   const [frozen, setFrozen] = useState<FeedSignal[] | null>(null);
   const [shown, setShown] = useState(300);
+  /** "discord": exactly what Discord received · "all": everything detected, sent or not. */
+  const [view, setView] = useState<"discord" | "all">("discord");
 
   useEffect(() => {
     const load = () => {
@@ -65,7 +67,11 @@ export default function FluxPage() {
     return [...intel.news, ...news].filter((n) => (seen.has(n.id) ? false : (seen.add(n.id), true))).sort((a, b) => b.ts - a.ts);
   }, [intel.rev, news]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const list = paused && frozen ? frozen : all;
+  // On the live site every signal has a Discord status; the local server has none (then: everything).
+  const hasMarks = all.some((s) => s.discord !== undefined && s.discord !== null);
+  const discordOnly = hasMarks && view === "discord";
+  const source = paused && frozen ? frozen : all;
+  const list = discordOnly ? source.filter((s) => s.discord === "sent") : source;
   const q = coin.trim().toUpperCase();
   const filtered = list.filter(
     (s) => (dir === "all" || s.direction === dir) && s.strength >= minStrength && !srcOff.has(s.source) && (!kind || s.kind === kind) && (!q || s.coin.includes(q)),
@@ -73,6 +79,7 @@ export default function FluxPage() {
   const confluences = all.filter((s) => s.kind === "CONFLUENCE").slice(0, 8);
   const hourAgo = Date.now() - 3_600_000;
   const lastHour = all.filter((s) => s.ts >= hourAgo);
+  const shownLastHour = (discordOnly ? all.filter((s) => s.discord === "sent") : all).filter((s) => s.ts >= hourAgo);
   const okSources = sources?.sources.filter((s) => s.enabled && s.state === "ok").length ?? 0;
   const enabledSources = sources?.sources.filter((s) => s.enabled).length ?? 0;
   const kindsPresent = [...new Set(all.map((s) => s.kind))].sort();
@@ -117,16 +124,16 @@ export default function FluxPage() {
       )}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
         <Card>
-          <Stat label="Signaux (1 h)" value={lastHour.length} hint={`${all.length} en mémoire`} />
+          <Stat label={discordOnly ? "Envoyés sur Discord (1 h)" : "Signaux (1 h)"} value={shownLastHour.length} hint={discordOnly ? `${lastHour.length} détectés en tout` : `${all.length} en mémoire`} />
         </Card>
         <Card>
-          <Stat label="Haussiers (1 h)" value={lastHour.filter((s) => s.direction === "bullish").length} tone="good" />
+          <Stat label="Haussiers (1 h)" value={shownLastHour.filter((s) => s.direction === "bullish").length} tone="good" />
         </Card>
         <Card>
-          <Stat label="Baissiers (1 h)" value={lastHour.filter((s) => s.direction === "bearish").length} tone="bad" />
+          <Stat label="Baissiers (1 h)" value={shownLastHour.filter((s) => s.direction === "bearish").length} tone="bad" />
         </Card>
         <Card>
-          <Stat label="Confluences (1 h)" value={lastHour.filter((s) => s.kind === "CONFLUENCE").length} tone="warn" hint="≥ 2 types d'indices d'accord" />
+          <Stat label="Confluences (1 h)" value={shownLastHour.filter((s) => s.kind === "CONFLUENCE").length} tone="warn" hint="≥ 2 types d'indices d'accord" />
         </Card>
         <Card>
           <Stat label="Cryptos suivies" value={base?.counts.universe ?? "—"} hint="toutes sources" />
@@ -139,6 +146,23 @@ export default function FluxPage() {
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_380px]">
         <div className="min-w-0 space-y-3">
           <Card>
+            {hasMarks && (
+              <div className="mb-3 flex flex-wrap items-center gap-2 border-b border-slate-800 pb-3 text-sm">
+                {(
+                  [
+                    ["discord", "📨 Comme sur Discord"],
+                    ["all", "Tout ce qui est détecté"],
+                  ] as const
+                ).map(([k, l]) => (
+                  <button key={k} type="button" onClick={() => setView(k)} className={`rounded px-3 py-1.5 font-semibold ${view === k ? "bg-indigo-600 text-white" : "bg-slate-800 text-slate-400 hover:text-slate-200"}`}>
+                    {l}
+                  </button>
+                ))}
+                <span className="text-xs text-slate-500">
+                  {discordOnly ? "exactement les signaux envoyés sur tes salons Discord (bot 24 h/24 + ce site)" : "y compris les signaux écartés par tes réglages, les doublons et ceux pas encore envoyés"}
+                </span>
+              </div>
+            )}
             <div className="flex flex-wrap items-center gap-2 text-xs">
               {(["all", "bullish", "bearish", "neutral"] as const).map((d) => (
                 <button

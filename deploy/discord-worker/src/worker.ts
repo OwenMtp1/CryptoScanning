@@ -970,6 +970,7 @@ export class RadarState {
     const reasons: Partial<Record<RelayReject, number>> = {};
     /** Per signal (site id): what happened on Discord. */
     const results: Record<string, DiscordMark> = {};
+    const keep: IntelSignal[] = [];
     const idOf = (x: unknown) => {
       const id = (x as { id?: unknown })?.id;
       return typeof id === "string" && id.length <= 80 ? id : null;
@@ -993,7 +994,11 @@ export class RadarState {
       // The site's signals are live (not a start-up backlog): sent even while the bot warms up.
       const m = this.dispatch(s);
       if (id) results[id] = m;
+      keep.push(s);
     }
+    // One list of reference: the relayed signals join the bot's own, so /signals returns everything
+    // Discord was offered (with what happened to each) and the site shows the same thing.
+    if (keep.length) L.svc.engine.addExternal(keep);
     L.relay.received += accepted;
     if (accepted) L.relay.lastAt = this.clock;
     await this.flushDiscord();
@@ -1089,7 +1094,7 @@ export class RadarState {
       // Compact: the worker needs cooldowns and recent signals, not full history.
       const intel = L.svc.exportState();
       const recent = this.clock - 3 * 3_600_000;
-      intel.engine.signals = intel.engine.signals.filter((s) => s.ts >= recent).slice(-600);
+      intel.engine.signals = intel.engine.signals.filter((s) => s.ts >= recent).slice(-1000);
       intel.engine.news = intel.engine.news.slice(-500).map((n) => ({ ...n, summary: "" }));
       intel.tracker = [];
       entries.intel = intel;
@@ -1100,7 +1105,7 @@ export class RadarState {
       // Fast runs only persist cooldowns + recent signals (small).
       const e = L.svc.engine.exportState();
       const saved = (await st.get<IntelSavedState>("intel")) ?? null;
-      if (saved) entries.intel = { ...saved, setups: L.svc.setupMemory(), engine: { ...saved.engine, cooldowns: e.cooldowns, signals: e.signals.filter((s) => s.ts >= this.clock - 3 * 3_600_000).slice(-600) } };
+      if (saved) entries.intel = { ...saved, setups: L.svc.setupMemory(), engine: { ...saved.engine, cooldowns: e.cooldowns, signals: e.signals.filter((s) => s.ts >= this.clock - 3 * 3_600_000).slice(-1000) } };
     }
     await st.put(entries);
     return status;

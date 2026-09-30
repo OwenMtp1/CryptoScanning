@@ -440,6 +440,11 @@ describe("Discord worker", () => {
     const relay = async (signals: unknown[]) => (await (await obj.fetch(new Request("https://radar/relay", { method: "POST", headers: { "x-relay-key": "k-123" }, body: JSON.stringify({ signals }) }))).json()) as { results: Record<string, string> };
     const r = await relay([sig, { ...sig, id: "s2" }, { ...sig, id: "s3", kind: "NOPE" }]);
     expect(r.results).toEqual({ s1: "sent", s2: "dup", s3: "refused:type" });
+    // The relayed signals join the bot's list of reference, with their Discord status.
+    const list = (await (await obj.fetch(new Request("https://radar/signals"))).json()) as { signals: { id: string; discord: string | null }[] };
+    expect(list.signals.find((x) => x.id === "site-s1")?.discord).toBe("sent");
+    expect(list.signals.find((x) => x.id === "site-s2")?.discord).toBe("dup");
+    expect(list.signals.some((x) => x.id === "site-s3")).toBe(false);
     expect(posted.some((p) => p.body.includes("ABCX décolle"))).toBe(true);
     // Filtered by the settings → said so.
     await obj.fetch(new Request("https://radar/prefs", { method: "POST", headers: { "x-relay-key": "k-123" }, body: JSON.stringify({ ...defaultPrefs(), minStrength: 50 }) }));

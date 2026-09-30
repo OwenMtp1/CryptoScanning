@@ -240,3 +240,14 @@ Le mode est actif par défaut et se règle dans la page Discord, carte « Envoi 
   - Historique et statistiques : taux de réussite, meilleur et pire trade, frais payés.
 - **Où c'est gardé.** Le compte est enregistré dans ce navigateur. Le moteur est `packages/core/src/trading/demo-account.ts`,
   entièrement testé. **Aucun ordre réel n'est jamais envoyé.**
+
+## 13. Flux identique à Discord
+
+- **Une seule liste de référence : celle du bot.** Les signaux relayés par le site rejoignent la liste des signaux du
+  bot, avec ce qui leur est arrivé sur Discord. La route `/signals` renvoie donc tout ce qui a été proposé à Discord.
+- **Le Flux s'ouvre en mode « 📨 Comme sur Discord ».** Il n'affiche que les signaux réellement envoyés sur tes salons,
+  qu'ils viennent du bot 24 h/24, de ce navigateur ou d'un autre appareil. Les compteurs suivent le même filtre.
+- **« Tout ce qui est détecté »** montre en plus les signaux écartés par tes réglages, les doublons et ceux pas
+  encore envoyés.
+- **Rythme :** le site récupère la liste du bot toutes les 15 s. Avec l'envoi groupé, un signal apparaît dans le Flux
+  dès qu'il est accepté par le bot, et dans Discord au prochain message groupé (5 min au plus).
