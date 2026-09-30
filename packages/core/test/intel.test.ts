@@ -347,7 +347,7 @@ describe("Discord formatting", () => {
   it("embeds respect field limits and never ping everyone", () => {
     const e = signalEmbed(s, 62.4);
     expect(e.title.length).toBe(256);
-    expect(e.fields!.find((f) => f.name.startsWith("Historique"))!.value).toContain("62 %");
+    expect(e.fields!.find((f) => f.name.startsWith("Fiabilité"))!.value).toContain("62 %");
     const msgs = packMessages([e], { content: "hello", mentionRole: "123" });
     expect(msgs[0]!.content).toBe("<@&123> hello");
     expect(msgs[0]!.allowed_mentions).toEqual({ parse: [], roles: ["123"] });

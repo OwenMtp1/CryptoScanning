@@ -27,7 +27,7 @@ export default function FluxPage() {
   const [frozen, setFrozen] = useState<FeedSignal[] | null>(null);
   const [shown, setShown] = useState(300);
   /** "discord": exactly what Discord received · "all": everything detected, sent or not. */
-  const [view, setView] = useState<"discord" | "all">("discord");
+  const [view, setView] = useState<"discord" | "all">("all");
 
   useEffect(() => {
     const load = () => {
@@ -150,8 +150,8 @@ export default function FluxPage() {
               <div className="mb-3 flex flex-wrap items-center gap-2 border-b border-slate-800 pb-3 text-sm">
                 {(
                   [
-                    ["discord", "📨 Comme sur Discord"],
                     ["all", "Tout ce qui est détecté"],
+                    ["discord", "📨 Seulement ce qui est parti sur Discord"],
                   ] as const
                 ).map(([k, l]) => (
                   <button key={k} type="button" onClick={() => setView(k)} className={`rounded px-3 py-1.5 font-semibold ${view === k ? "bg-indigo-600 text-white" : "bg-slate-800 text-slate-400 hover:text-slate-200"}`}>

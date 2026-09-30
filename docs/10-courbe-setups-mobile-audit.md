@@ -251,3 +251,23 @@ Le mode est actif par défaut et se règle dans la page Discord, carte « Envoi 
   encore envoyés.
 - **Rythme :** le site récupère la liste du bot toutes les 15 s. Avec l'envoi groupé, un signal apparaît dans le Flux
   dès qu'il est accepté par le bot, et dans Discord au prochain message groupé (5 min au plus).
+
+## 14. Discord aussi riche que le site
+
+- **Des alertes avec tout ce que montre la carte du site :**
+  - le type et la source en toutes lettres (« Décollage · Coinbase » au lieu des codes bruts) ;
+  - la force, la direction, le prix et la fiabilité mesurée du type de signal ;
+  - les **mesures** (5 min, 1 h, volume, financement, intérêt ouvert…) ;
+  - les raisons (jusqu'à 600 caractères en envoi groupé) ;
+  - un lien **📈 Courbe et leviers** vers la page du site, et le lien vers la source.
+- **Le « 📊 Point marché », toutes les heures par défaut** (15 min à 4 h, ou coupé, dans la page Discord). C'est la
+  vue d'ensemble du site en un message :
+  - le contexte du marché ;
+  - les signaux de la période (dont les confluences) ;
+  - les narratifs chauds, les cryptos dont on parle ;
+  - les plus fortes hausses et baisses sur 1 h ;
+  - les actus à la une, avec leurs liens.
+
+  Il est envoyé dans le salon neutre, sinon dans les salons haussier et baissier.
+- **Le Flux du site repasse sur « Tout ce qui est détecté » par défaut.** Le filtre « Seulement ce qui est parti sur
+  Discord » reste disponible pour comparer.

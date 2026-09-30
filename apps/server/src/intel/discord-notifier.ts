@@ -40,6 +40,8 @@ export interface DiscordNotifierOptions {
   log: LogFn;
   /** Historical 1 h hit rate of a signal kind × direction (null = not enough data). */
   hitRateOf(s: IntelSignal): number | null;
+  /** Address of the site (for the « Courbe » link in alerts). */
+  siteUrl?: string | null;
   now?: () => number;
 }
 
@@ -51,7 +53,7 @@ export interface BatchMode {
 }
 
 /** Characters kept per alert in a grouped message, so that about 10 fit in Discord's 6000. */
-const BATCH_DESCRIPTION = 380;
+const BATCH_DESCRIPTION = 600;
 const MAX_CHARS = 5800;
 
 export class DiscordNotifier {
@@ -108,6 +110,12 @@ export class DiscordNotifier {
     }
   }
 
+  /** Queue a ready-made message (e.g. the « Point marché »); it leaves with the next send. */
+  enqueue(embeds: DiscordEmbed[], content?: string) {
+    if (!this.active) return;
+    this.queue.push(...packMessages(embeds, { content }));
+  }
+
   /** Decide what happens to a new signal: immediate alert, digest, or nothing. */
   consider(s: IntelSignal): "urgent" | "digest" | "skip" {
     const c = this.o.cfg;
@@ -157,7 +165,7 @@ export class DiscordNotifier {
       for (let i = 0; i < list.length; i += per) {
         const group = list.slice(i, i + per);
         const mention = mentionFor(group);
-        this.queue.push(...packMessages(group.map((s) => signalEmbed(s, this.o.hitRateOf(s))), { mentionRole: mention, content: mention ? "Signal fort" : undefined }));
+        this.queue.push(...packMessages(group.map((s) => signalEmbed(s, this.o.hitRateOf(s), { siteUrl: this.o.siteUrl })), { mentionRole: mention, content: mention ? "Signal fort" : undefined }));
       }
       if (this.queue.length > 3000) this.queue.splice(0, this.queue.length - 3000);
       return;
@@ -168,7 +176,7 @@ export class DiscordNotifier {
       return;
     }
     const mention = mentionFor(list);
-    const embeds = list.slice(0, 10).map((s) => signalEmbed(s, this.o.hitRateOf(s)));
+    const embeds = list.slice(0, 10).map((s) => signalEmbed(s, this.o.hitRateOf(s), { siteUrl: this.o.siteUrl }));
     if (list.length > 10 && c.digestMin > 0) this.digest.push(...list.slice(10));
     this.queue.push(...packMessages(embeds, { mentionRole: mention, content: mention ? "Signal fort" : undefined }));
   }
@@ -188,7 +196,7 @@ export class DiscordNotifier {
     let taken = 0;
     for (const s of this.pending) {
       if (embeds.length >= b.maxPerMessage) break;
-      const e = signalEmbed(s, this.o.hitRateOf(s), { maxDescription: BATCH_DESCRIPTION });
+      const e = signalEmbed(s, this.o.hitRateOf(s), { maxDescription: BATCH_DESCRIPTION, siteUrl: this.o.siteUrl });
       const size = embedSize(e);
       if (embeds.length && chars + size > MAX_CHARS) break;
       embeds.push(e);

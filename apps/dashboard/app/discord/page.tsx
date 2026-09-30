@@ -26,6 +26,7 @@ interface Prefs {
   minHitRate: number | null;
   leverage?: LeveragePrefs;
   batch?: { enabled: boolean; everyMin: number; maxPerMessage: number };
+  marketPoint?: { enabled: boolean; everyMin: number };
   updatedAt: number | null;
 }
 interface LeveragePrefs {
@@ -143,6 +144,8 @@ export default function DiscordPage() {
   const setLv = (patch: Partial<LeveragePrefs>) => setP({ ...p, leverage: { ...lv, ...patch } });
   const bt = { enabled: true, everyMin: 5, maxPerMessage: 10, ...(p.batch ?? {}) };
   const setBt = (patch: Partial<typeof bt>) => setP({ ...p, batch: { ...bt, ...patch } });
+  const mp = { enabled: true, everyMin: 60, ...(p.marketPoint ?? {}) };
+  const setMp = (patch: Partial<typeof mp>) => setP({ ...p, marketPoint: { ...mp, ...patch } });
 
   const save = async () => {
     setBusy(true);
@@ -286,6 +289,29 @@ export default function DiscordPage() {
         </div>
         <p className="mt-3 text-[11px] text-slate-500">
           Toutes les {bt.everyMin} min (à heure fixe), chaque salon reçoit <strong>un seul message</strong> avec les alertes arrivées entre-temps : jusqu&apos;à {bt.maxPerMessage}, dans la limite de 6 000 caractères de Discord (texte de chaque alerte raccourci). S&apos;il y en a plus, le reste part au message suivant, dans l&apos;ordre d&apos;arrivée, et le message l&apos;indique (« N reportées »). Si la file grossit trop, augmente le nombre par message ou réduis l&apos;intervalle.
+        </p>
+        <div className="mt-3">
+          <button onClick={() => void save()} disabled={busy} className="rounded bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-500 disabled:opacity-40">
+            {busy ? "Enregistrement…" : "Enregistrer"}
+          </button>
+        </div>
+      </Card>
+
+      <Card title="📊 Point marché sur Discord">
+        <label className="flex items-center gap-2 text-sm">
+          <input type="checkbox" checked={mp.enabled} onChange={(e) => setMp({ enabled: e.target.checked })} />
+          <span className="font-semibold">Envoyer un point marché</span>
+        </label>
+        <div className={`mt-2 flex flex-wrap items-center gap-1 ${mp.enabled ? "" : "opacity-50"}`}>
+          <span className="mr-2 text-xs text-slate-400">toutes les</span>
+          {[15, 30, 60, 120, 240].map((m) => (
+            <button key={m} type="button" disabled={!mp.enabled} onClick={() => setMp({ everyMin: m })} className={`rounded px-2.5 py-1.5 text-sm ${mp.everyMin === m ? "bg-indigo-600 text-white" : "bg-slate-800 text-slate-300"}`}>
+              {m < 60 ? `${m} min` : `${m / 60} h`}
+            </button>
+          ))}
+        </div>
+        <p className="mt-2 text-[11px] text-slate-500">
+          La vue d&apos;ensemble du site dans un message : contexte du marché, signaux de la période, narratifs chauds, cryptos dont on parle, plus fortes hausses et baisses sur 1 h, actus à la une. Envoyé dans le salon neutre (sinon dans les salons haussier et baissier).
         </p>
         <div className="mt-3">
           <button onClick={() => void save()} disabled={busy} className="rounded bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-500 disabled:opacity-40">

@@ -48,6 +48,7 @@ import { fetchText } from "../../../apps/server/src/intel/http";
 import { loadPerpMarkets } from "../../../apps/server/src/intel/perp-sources";
 import { IntelService, type IntelSavedState } from "../../../apps/server/src/intel/intel-service";
 import { runSetup } from "../../../apps/server/src/intel/setup-scanner";
+import { marketPointEmbed } from "../../../apps/server/src/intel/market-point";
 
 interface Env {
   RADAR: { idFromName(n: string): unknown; get(id: unknown, opts?: { locationHint?: string }): { fetch(url: string, init?: RequestInit): Promise<Response> } };
@@ -145,6 +146,8 @@ export interface DiscordPrefs {
   leverage: LeveragePrefs;
   /** Grouped sending, every channel: one message every `everyMin` min with up to `maxPerMessage` alerts. */
   batch: { enabled: boolean; everyMin: number; maxPerMessage: number };
+  /** « Point marché » (overview message) every `everyMin` min. */
+  marketPoint: { enabled: boolean; everyMin: number };
   updatedAt: number | null;
 }
 
@@ -173,7 +176,7 @@ export function defaultLeveragePrefs(): LeveragePrefs {
 }
 
 export function defaultPrefs(minStrength = 0): DiscordPrefs {
-  return { enabled: true, minStrength, kinds: [], sources: [], directions: ["bullish", "bearish", "neutral"], includeCoins: [], excludeCoins: [], minHitRate: null, leverage: defaultLeveragePrefs(), batch: { enabled: true, everyMin: 5, maxPerMessage: 10 }, updatedAt: null };
+  return { enabled: true, minStrength, kinds: [], sources: [], directions: ["bullish", "bearish", "neutral"], includeCoins: [], excludeCoins: [], minHitRate: null, leverage: defaultLeveragePrefs(), batch: { enabled: true, everyMin: 5, maxPerMessage: 10 }, marketPoint: { enabled: true, everyMin: 60 }, updatedAt: null };
 }
 
 /** Validate prefs sent by the site (strict, bounded). */
@@ -209,9 +212,12 @@ export function sanitizePrefs(x: unknown, now: number): DiscordPrefs | null {
   };
   const bt = (o.batch && typeof o.batch === "object" ? o.batch : {}) as Record<string, unknown>;
   const batch = { enabled: bt.enabled !== false, everyMin: Math.round(bounded(bt.everyMin, 1, 60, 5)), maxPerMessage: Math.round(bounded(bt.maxPerMessage, 1, 10, 10)) };
+  const mp = (o.marketPoint && typeof o.marketPoint === "object" ? o.marketPoint : {}) as Record<string, unknown>;
+  const marketPoint = { enabled: mp.enabled !== false, everyMin: [15, 30, 60, 120, 240].includes(Number(mp.everyMin)) ? Number(mp.everyMin) : 60 };
   return {
     leverage,
     batch,
+    marketPoint,
     enabled: o.enabled !== false,
     minStrength: Math.round(ms),
     kinds: list(o.kinds, (k) => KINDS.has(k as IntelKind)),
@@ -360,6 +366,7 @@ export class RadarState {
     lastCycleAt: number | null;
     exchangeTurn: number;
     setupTurn: number;
+    lastPointAt: number;
     btcTrend: { value: number | null; at: number };
     exchangeBackoff: Partial<Record<ExchangeId, number>>;
     exchangeHist: Partial<Record<ExchangeId, BinanceRestHistory>>;
@@ -489,7 +496,7 @@ export class RadarState {
         ...(role && /^\d+$/.test(role) ? { mentionRoleId: role } : {}),
       },
     });
-    const meta = (await st.get<{ warm?: boolean; welcomed?: string[]; lastFullRunAt?: number; relay?: { received: number; lastAt: number | null; rejected?: number }; sentLog?: number[]; seen?: Record<string, number>; stage?: number; lastCycleAt?: number | null; exchangeTurn?: number; setupTurn?: number; binanceHost?: number; marks?: Record<string, { st: DiscordMark; at: number }> }>("meta")) ?? {};
+    const meta = (await st.get<{ warm?: boolean; welcomed?: string[]; lastFullRunAt?: number; relay?: { received: number; lastAt: number | null; rejected?: number }; sentLog?: number[]; seen?: Record<string, number>; stage?: number; lastCycleAt?: number | null; exchangeTurn?: number; setupTurn?: number; lastPointAt?: number; binanceHost?: number; marks?: Record<string, { st: DiscordMark; at: number }> }>("meta")) ?? {};
 
     // Channel routing: one webhook per direction when configured, the general webhook for the rest,
     // and an optional leverage channel that takes the leveraged-market kinds.
@@ -511,7 +518,7 @@ export class RadarState {
     const channels: Channel[] = specs
       .filter((c) => c.url && c.directions.length)
       .map((c) => {
-        const n = new DiscordNotifier({ webhookUrl: c.url, cfg: { ...cfg.discord, directions: c.directions }, fetchText, log: errorsSink(c.label), hitRateOf: (s) => this.loaded?.svc.hitRateOf(s) ?? null, now: () => this.clock });
+        const n = new DiscordNotifier({ webhookUrl: c.url, cfg: { ...cfg.discord, directions: c.directions }, fetchText, log: errorsSink(c.label), hitRateOf: (s) => this.loaded?.svc.hitRateOf(s) ?? null, siteUrl: (env.SITE_URL ?? "").trim() || null, now: () => this.clock });
         // Old single-channel state (v1) belongs to the general channel.
         n.importState((savedDiscord[c.id] ?? (c.id === "general" && "lastCoinAt" in savedDiscord ? savedDiscord : undefined)) as never);
         return { id: c.id, label: c.label, directions: c.directions, n };
@@ -531,7 +538,7 @@ export class RadarState {
       binanceDiag: { host: null, okAt: null, lastError: null, tried: {} },
       coinbaseBackoffUntil: 0,
       seen: new Map(Object.entries(meta.seen ?? {})),
-      prefs: { ...defaultPrefs(0), ...storedPrefs, batch, leverage: { ...defaultLeveragePrefs(), ...((await st.get<Partial<DiscordPrefs>>("prefs"))?.leverage ?? {}) } },
+      prefs: { ...defaultPrefs(0), ...storedPrefs, batch, marketPoint: { ...defaultPrefs().marketPoint, ...(storedPrefs.marketPoint ?? {}) }, leverage: { ...defaultLeveragePrefs(), ...((await st.get<Partial<DiscordPrefs>>("prefs"))?.leverage ?? {}) } },
       recentSent: (await st.get<{ ts: number; dir: Direction; kind: IntelKind; coin: string; channel: string }[]>("recentSent")) ?? [],
       listings: (() => {
         return { cb: new Set<string>(), cbCoins: new Set<string>(), bn: new Set<string>(), seededCb: false, seededBn: false };
@@ -541,6 +548,7 @@ export class RadarState {
       lastCycleAt: meta.lastCycleAt ?? meta.lastFullRunAt ?? null,
       exchangeTurn: meta.exchangeTurn ?? 0,
       setupTurn: meta.setupTurn ?? 0,
+      lastPointAt: meta.lastPointAt ?? 0,
       btcTrend: { value: null, at: 0 },
       exchangeBackoff: {} as Partial<Record<ExchangeId, number>>,
       exchangeHist: {} as Partial<Record<ExchangeId, BinanceRestHistory>>,
@@ -952,6 +960,16 @@ export class RadarState {
     }
     svc.tickOutcomes(now);
 
+    // « Point marché »: the site's overview on Discord, on the neutral / general channel (else bull + bear).
+    const mpEvery = L.prefs.marketPoint?.everyMin ?? 60;
+    if (L.warm && L.prefs.enabled && L.prefs.marketPoint?.enabled !== false && Math.floor(now / (mpEvery * 60_000)) > Math.floor(L.lastPointAt / (mpEvery * 60_000))) {
+      L.lastPointAt = now;
+      const embed = marketPointEmbed(svc, now, { siteUrl: site || null, everyMin: mpEvery });
+      const general = L.channels.filter((c) => c.id === "general");
+      const targets = general.length ? general : L.channels.filter((c) => c.id !== "leverage");
+      for (const c of targets) c.n.enqueue([embed]);
+    }
+
     await this.flushDiscord();
     const status = await this.save(t0, sources, full, stage > 0);
     await this.scheduleNext();
@@ -1053,7 +1071,7 @@ export class RadarState {
 
   private meta(L: NonNullable<RadarState["loaded"]>) {
     const seen = Object.fromEntries([...L.seen].filter(([, t]) => t > this.clock - 30 * 60_000));
-    return { warm: L.warm, welcomed: [...L.welcomed], lastFullRunAt: L.lastFullRunAt, stage: L.stage, lastCycleAt: L.lastCycleAt, exchangeTurn: L.exchangeTurn, setupTurn: L.setupTurn, binanceHost: L.binanceHost, marks: Object.fromEntries([...L.marks].filter(([, v]) => v.at > this.clock - 3 * 3_600_000).slice(-1500)), relay: L.relay, sentLog: L.sentLog.filter((t) => t > this.clock - 86_400_000).slice(-20000), seen };
+    return { warm: L.warm, welcomed: [...L.welcomed], lastFullRunAt: L.lastFullRunAt, stage: L.stage, lastCycleAt: L.lastCycleAt, exchangeTurn: L.exchangeTurn, setupTurn: L.setupTurn, lastPointAt: L.lastPointAt, binanceHost: L.binanceHost, marks: Object.fromEntries([...L.marks].filter(([, v]) => v.at > this.clock - 3 * 3_600_000).slice(-1500)), relay: L.relay, sentLog: L.sentLog.filter((t) => t > this.clock - 86_400_000).slice(-20000), seen };
   }
 
   private discordView(L: NonNullable<RadarState["loaded"]>) {

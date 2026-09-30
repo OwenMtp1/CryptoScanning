@@ -5,9 +5,9 @@ const WEBHOOK = "https://discord.com/api/webhooks/123/tok_EN-secret";
 const SITE = "https://crypto-radar.pages.dev";
 
 /** Bot storage. By default the tests check one message per alert (grouped sending off). */
-function storage(opts: { batch?: boolean } = {}) {
+function storage(opts: { batch?: boolean; point?: boolean } = {}) {
   const m = new Map<string, unknown>();
-  if (!opts.batch) m.set("prefs", { batch: { enabled: false, everyMin: 5, maxPerMessage: 10 } });
+  if (!opts.batch) m.set("prefs", { batch: { enabled: false, everyMin: 5, maxPerMessage: 10 }, marketPoint: { enabled: opts.point ?? false, everyMin: 60 } });
   return { m, get: async (k: string) => structuredClone(m.get(k)), put: async (e: Record<string, unknown>) => void Object.entries(e).forEach(([k, v]) => m.set(k, structuredClone(v))) };
 }
 
@@ -177,7 +177,7 @@ describe("Discord worker", () => {
     const prefs = (key: string, body: unknown) => obj.fetch(new Request("https://radar/prefs", { method: "POST", headers: { "x-relay-key": key }, body: JSON.stringify(body) }));
     expect((await prefs("bad", { minStrength: 50 })).status).toBe(401);
     expect((await prefs("code-1234567890", { minStrength: 500 })).status).toBe(400);
-    const ok = (await (await prefs("code-1234567890", { minStrength: 0, kinds: ["NEW_LISTING", "NOT_A_KIND"], directions: ["bullish"], excludeCoins: ["doge"] })).json()) as { prefs: { kinds: string[]; excludeCoins: string[] } };
+    const ok = (await (await prefs("code-1234567890", { minStrength: 0, kinds: ["NEW_LISTING", "NOT_A_KIND"], directions: ["bullish"], excludeCoins: ["doge"], marketPoint: { enabled: false } })).json()) as { prefs: { kinds: string[]; excludeCoins: string[] } };
     expect(ok.prefs.kinds).toEqual(["NEW_LISTING"]);
     expect(ok.prefs.excludeCoins).toEqual(["DOGE"]);
     const view = (await (await obj.fetch(new Request("https://radar/prefs"))).json()) as { prefs: { kinds: string[] }; kinds: string[] };
@@ -482,5 +482,35 @@ describe("Discord worker", () => {
     expect(alerts()).toHaveLength(2);
     expect(alerts()[1].embeds.map((e: { title: string }) => e.title)).toEqual(["C10X décolle", "C11X décolle", "C12X décolle", "C13X décolle", "C20X décolle"]);
     expect(alerts()[1].content).not.toContain("reportée");
+  });
+
+  it("posts a « Point marché » every hour with the site's overview, and rich alerts with labels, measures and a chart link", async () => {
+    vi.useFakeTimers({ now: Date.UTC(2026, 8, 24, 11, 58), toFake: ["Date"] });
+    posted.length = 0;
+    vi.stubGlobal("fetch", vi.fn(async (u: string, i?: { method?: string; body?: string }) => fakeFetch(u, i)));
+    const st = storage({ point: true });
+    const env = { RADAR: {} as never, DISCORD_WEBHOOK_URL: WEBHOOK, SITE_URL: SITE };
+    const run = () => scan3(() => new RadarState({ storage: st } as never, env));
+    price = 1;
+    await run(); // warm-up
+    vi.setSystemTime(Date.UTC(2026, 8, 24, 12, 3));
+    price = 1.08;
+    await run();
+    const msgs = posted.map((p) => JSON.parse(p.body));
+    const point = msgs.find((m) => m.embeds?.[0]?.title?.startsWith("📊 Point marché"));
+    expect(point).toBeTruthy();
+    const names = point.embeds[0].fields.map((f: { name: string }) => f.name).join(" | ");
+    expect(names).toContain("Narratifs chauds");
+    expect(point.embeds[0].description).toContain("Contexte");
+    // Alerts carry the same details as the site's cards.
+    const alert = msgs.find((m) => m.embeds?.[0]?.title?.includes("PEPE décolle"))?.embeds[0];
+    expect(alert.footer.text).toMatch(/Décollage · Coinbase/);
+    expect(alert.fields.some((f: { name: string }) => f.name === "Mesures")).toBe(true);
+    expect(alert.fields.find((f: { name: string }) => f.name === "Liens").value).toContain(`${SITE}/#courbe?coin=PEPE`);
+    // Only once per hour.
+    const n = msgs.filter((m) => m.embeds?.[0]?.title?.startsWith("📊")).length;
+    vi.setSystemTime(Date.UTC(2026, 8, 24, 12, 20));
+    await run();
+    expect(posted.map((p) => JSON.parse(p.body)).filter((m) => m.embeds?.[0]?.title?.startsWith("📊")).length).toBe(n);
   });
 });
