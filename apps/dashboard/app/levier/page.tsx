@@ -89,6 +89,7 @@ export default function LevierPage() {
             {d?.markets.length ?? 0} marché(s) perpétuel(s) Coinbase{d?.at ? ` · mis à jour il y a ${fmtAgo(d.at, now)}` : ""}
             {d?.origin ? ` · lecture ${d.origin === "bot" ? "du bot 24 h/24" : "de cette page"}` : ""}
             {d?.cached ? " · dernière liste connue, actualisation…" : ""}
+            {d?.sources?.length ? ` · sources : ${d.sources.join(", ")}` : ""}
             {d?.context?.note ? ` · ${d.context.note}` : ""}
           </span>
         </div>
@@ -135,7 +136,19 @@ export default function LevierPage() {
             {d && !rows.length && (
               <tr>
                 <td colSpan={13} className="px-2 py-6 text-center text-slate-500">
-                  {d.markets.length ? "Aucun marché ne correspond au filtre." : "Chargement des marchés à levier Coinbase…"}
+                  {d.markets.length ? (
+                    "Aucun marché ne correspond au filtre."
+                  ) : d.tried ? (
+                    <span className="text-amber-300">
+                      Aucune source de marchés à levier n&apos;a répondu :
+                      <br />
+                      {(d.errors ?? []).join(" · ") || "raison inconnue"}
+                      <br />
+                      <span className="text-slate-500">Nouvel essai automatique toutes les 2 minutes.</span>
+                    </span>
+                  ) : (
+                    "Chargement des marchés à levier…"
+                  )}
                 </td>
               </tr>
             )}

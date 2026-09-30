@@ -39,6 +39,10 @@ export interface LeverageResponse {
   origin?: "bot" | "site";
   /** Shown from this browser's last visit while a fresh reading loads. */
   cached?: boolean;
+  /** Every source was tried (an empty list is then final, with the reasons). */
+  tried?: boolean;
+  sources?: string[];
+  errors?: string[];
 }
 export type UniverseRow = CoinRow & { signals24h: number; lastSignal: { kind: IntelKind; direction: Direction; strength: number; ts: number } | null };
 export interface UniverseResponse {

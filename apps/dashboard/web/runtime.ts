@@ -9,8 +9,9 @@
  *   read cross-origin from a browser).
  * No Discord here: alerts need a process that runs 24/7.
  */
-import { CoinbasePriceHistory, IntelConfigSchema, parseFeed, parsePerps, parseProductsPage, type LogEvent } from "@radar/core";
+import { CoinbasePriceHistory, IntelConfigSchema, parseFeed, parseProductsPage, type LogEvent } from "@radar/core";
 import { handleAction, handleGet, type RouteContext } from "../../server/src/api/routes";
+import { loadPerpMarkets } from "../../server/src/intel/perp-sources";
 import { BinanceFeed } from "../../server/src/intel/binance-feed";
 import { CallBudget } from "../../server/src/intel/budget";
 import { CoinGeckoFeed } from "../../server/src/intel/coingecko-feed";
@@ -137,25 +138,26 @@ export async function startWeb(): Promise<DemoBackend> {
   };
 
   // Coinbase perpetual contracts: the site lists them itself (all markets visible even before the bot answers).
-  const pollPerps = async () => {
-    const direct = "https://api.coinbase.com/api/v3/brokerage/market/products?product_type=FUTURE&contract_expiry_type=PERPETUAL";
+  // Straight from the browser first (own IP), then through the site's cached proxy when there is one.
+  const perpGet = async (url: string, proxy?: string) => {
     try {
-      let r;
-      try {
-        r = await fetchText(direct, { timeoutMs: 6_000 });
-        if (r.status !== 200) throw new Error(`HTTP ${r.status}`);
-      } catch {
-        r = await fetchText("/api/coinbase/products?type=perp", { timeoutMs: 15_000 });
-      }
-      if (r.status !== 200) throw new Error(`HTTP ${r.status}`);
-      const markets = parsePerps(JSON.parse(r.text));
-      if (markets.length) {
-        svc.onPerps(markets, new Map());
-        void refreshLeverage();
-      }
-    } catch (err) {
-      svc.setSourceState("leverage", "degraded", `marchés à levier Coinbase indisponibles : ${(err as Error).message}`);
+      const r = await fetchText(url, { timeoutMs: 6_000 });
+      if (r.status === 200) return r.text;
+      if (!proxy) throw new Error(`HTTP ${r.status}`);
+    } catch (e) {
+      if (!proxy) throw e;
     }
+    const r = await fetchText(proxy as string, { timeoutMs: 15_000 });
+    if (r.status !== 200) throw new Error(`HTTP ${r.status}${r.headers.get("x-upstream-status") ? ` (a répondu ${r.headers.get("x-upstream-status")})` : ""}`);
+    return r.text;
+  };
+  let perpsTried = false;
+  const pollPerps = async () => {
+    const r = await loadPerpMarkets(perpGet, () => svc.perpsFromDerivatives());
+    perpsTried = true;
+    svc.setPerpDiagnostics(r.sources, r.errors);
+    if (r.markets.length) svc.onPerps(r.markets, new Map());
+    void refreshLeverage();
   };
   void pollPerps();
   setInterval(() => void pollPerps(), 120_000);
@@ -176,7 +178,7 @@ export async function startWeb(): Promise<DemoBackend> {
       try {
         const bot = await botGet<{ at: number | null; markets: unknown[] }>("/api/discord/leverage");
         const local = svc.leverage();
-        const next = bot?.at && bot.markets.length && Date.now() - bot.at < 15 * 60_000 ? { ...bot, origin: "bot" } : local.markets.length ? { ...local, origin: "site" } : null;
+        const next = bot?.at && bot.markets.length && Date.now() - bot.at < 15 * 60_000 ? { ...bot, origin: "bot" } : local.markets.length ? { ...local, origin: "site" } : perpsTried ? { ...local, origin: "site", tried: true } : null;
         if (next) {
           levCache.data = next;
           try {

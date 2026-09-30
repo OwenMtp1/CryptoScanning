@@ -114,3 +114,26 @@ describe("misc", () => {
     expect(Object.keys(h.export())).toEqual(["PEPE"]);
   });
 });
+
+import { mergePerps, parseBinanceFutures, parseIntxInstruments } from "../src/intel/leverage.js";
+
+describe("other perpetual sources", () => {
+  it("Coinbase International instruments: PERP only, max leverage = 1 / base_imf, funding in %", () => {
+    const m = parseIntxInstruments([
+      { symbol: "BTC-PERP", type: "PERP", base_asset_name: "BTC", base_imf: 0.02, open_interest: "10", notional_24hr: "5000000", trading_state: "TRADING", quote: { mark_price: "100000", predicted_funding: "0.00001" } },
+      { symbol: "BTC-USDC", type: "SPOT", base_asset_name: "BTC" },
+      { symbol: "OLD-PERP", type: "PERP", base_asset_name: "OLD", trading_state: "DELISTED" },
+    ]);
+    expect(m).toHaveLength(1);
+    expect(m[0]).toMatchObject({ coin: "BTC", maxLeverage: 50, venue: "Coinbase International", openInterest: 1_000_000, volume24hUsd: 5_000_000 });
+    expect(m[0]!.fundingPct).toBeCloseTo(0.001, 8);
+  });
+  it("Binance Futures public data (no max leverage) and merging (Coinbase first)", () => {
+    const b = parseBinanceFutures([{ symbol: "ETHUSDT", markPrice: "3000", lastFundingRate: "0.0001" }, { symbol: "ETHBUSD", markPrice: "1" }], [{ symbol: "ETHUSDT", priceChangePercent: "2.5", quoteVolume: "900" }]);
+    expect(b).toEqual([expect.objectContaining({ coin: "ETH", maxLeverage: null, change24h: 2.5, volume24hUsd: 900 })]);
+    expect(b[0]!.fundingPct).toBeCloseTo(0.01, 8);
+    const merged = mergePerps([{ ...b[0]!, venue: "Coinbase" }], b);
+    expect(merged).toHaveLength(1);
+    expect(merged[0]!.venue).toBe("Coinbase");
+  });
+});

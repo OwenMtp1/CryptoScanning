@@ -37,10 +37,10 @@ import {
   type Product,
   type Candidate,
   type Direction,
-  parsePerps,
 } from "../../../packages/core/src/index";
 import { DiscordNotifier } from "../../../apps/server/src/intel/discord-notifier";
 import { fetchText } from "../../../apps/server/src/intel/http";
+import { loadPerpMarkets } from "../../../apps/server/src/intel/perp-sources";
 import { IntelService, type IntelSavedState } from "../../../apps/server/src/intel/intel-service";
 
 interface Env {
@@ -584,9 +584,15 @@ export class RadarState {
     }
     if (full) {
       // 5. Leveraged markets: Coinbase perpetual contracts (+ Binance long/short ratio for the biggest).
-      const perpText = await this.get("Coinbase perpétuels", "https://api.coinbase.com/api/v3/brokerage/market/products?product_type=FUTURE&contract_expiry_type=PERPETUAL");
-      if (perpText) {
-        const markets = parsePerps(JSON.parse(perpText));
+      const perpLoad = await loadPerpMarkets(async (url) => {
+        const r = await fetchText(url, { timeoutMs: 20_000, headers: { accept: "application/json" } });
+        if (r.status !== 200) throw new Error(`HTTP ${r.status}`);
+        return r.text;
+      }, () => svc.perpsFromDerivatives());
+      svc.setPerpDiagnostics(perpLoad.sources, perpLoad.errors, now);
+      if (!perpLoad.markets.length) this.errors.push(`Marchés à levier : ${perpLoad.errors.join(" · ")}`);
+      if (perpLoad.markets.length) {
+        const markets = perpLoad.markets;
         const extras = new Map<string, { takerBuyRatio?: number | null; longShortRatio?: number | null }>();
         for (const m of markets) extras.set(m.coin, { takerBuyRatio: L.flow.get(m.coin) ?? null });
         if (now >= L.lsBackoffUntil) {

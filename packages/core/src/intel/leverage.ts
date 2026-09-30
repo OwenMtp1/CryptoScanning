@@ -169,3 +169,92 @@ export function readLeverage(m: PerpMarket, c: LeverageContext): LeverageReading
     context: c,
   };
 }
+
+// ─── Other sources of perpetual markets (fallbacks) ─────────────────────────
+
+/**
+ * Coinbase International Exchange `GET https://api.international.coinbase.com/api/v1/instruments`
+ * (fields of the official intx-sdk: type, symbol, base_asset_name, base_imf, open_interest,
+ * notional_24hr, trading_state, quote.mark_price / predicted_funding). Max leverage = 1 / base_imf.
+ */
+export function parseIntxInstruments(json: unknown): PerpMarket[] {
+  const list = Array.isArray(json) ? json : ((json as { instruments?: unknown[] })?.instruments ?? []);
+  const num = (v: unknown) => {
+    const n = Number(v);
+    return v === null || v === undefined || v === "" || !Number.isFinite(n) ? null : n;
+  };
+  const out: PerpMarket[] = [];
+  for (const raw of list) {
+    const i = raw as Record<string, unknown>;
+    if (i?.type !== "PERP") continue;
+    if (i.trading_state && !["TRADING", "trading"].includes(String(i.trading_state))) continue;
+    const symbol = String(i.symbol ?? "");
+    const coin = String(i.base_asset_name ?? symbol.split("-")[0] ?? "").toUpperCase();
+    if (!coin) continue;
+    const q = (i.quote ?? {}) as Record<string, unknown>;
+    const imf = num(i.base_imf);
+    const funding = num(q.predicted_funding);
+    const price = num(q.mark_price) ?? num(q.trade_price) ?? num(q.index_price);
+    const oiQty = num(i.open_interest);
+    out.push({
+      productId: `${symbol}-INTX`,
+      coin,
+      name: `${coin} PERP`,
+      venue: "Coinbase International",
+      maxLeverage: imf && imf > 0 ? Math.round(1 / imf) : null,
+      price,
+      change24h: null,
+      fundingPct: funding !== null ? funding * 100 : null,
+      openInterest: oiQty !== null && price !== null ? oiQty * price : oiQty,
+      volume24hUsd: num(i.notional_24hr),
+      url: `https://www.coinbase.com/advanced-trade/perpetuals/${symbol}-INTX`,
+    });
+  }
+  return out;
+}
+
+/**
+ * Binance USDⓈ-M futures, public: `GET /fapi/v1/premiumIndex` (mark price, funding for every
+ * symbol) + `GET /fapi/v1/ticker/24hr` (24 h change and volume). Binance does not publish the
+ * maximum leverage without an account: it stays unknown.
+ */
+export function parseBinanceFutures(premium: unknown, tickers: unknown): PerpMarket[] {
+  const t = new Map<string, Record<string, unknown>>();
+  for (const x of Array.isArray(tickers) ? tickers : []) t.set(String((x as Record<string, unknown>).symbol), x as Record<string, unknown>);
+  const out: PerpMarket[] = [];
+  for (const raw of Array.isArray(premium) ? premium : []) {
+    const p = raw as Record<string, unknown>;
+    const symbol = String(p.symbol ?? "");
+    if (!symbol.endsWith("USDT")) continue;
+    const coin = symbol.slice(0, -4);
+    const k = t.get(symbol) ?? {};
+    const price = Number(p.markPrice);
+    out.push({
+      productId: `${symbol}-BINANCE`,
+      coin,
+      name: `${coin} perpétuel`,
+      venue: "Binance Futures",
+      maxLeverage: null,
+      price: Number.isFinite(price) ? price : null,
+      change24h: Number.isFinite(Number(k.priceChangePercent)) ? Number(k.priceChangePercent) : null,
+      fundingPct: Number.isFinite(Number(p.lastFundingRate)) ? Number(p.lastFundingRate) * 100 : null,
+      openInterest: null,
+      volume24hUsd: Number.isFinite(Number(k.quoteVolume)) ? Number(k.quoteVolume) : null,
+      url: `https://www.binance.com/en/futures/${symbol}`,
+    });
+  }
+  return out.sort((a, b) => (b.volume24hUsd ?? 0) - (a.volume24hUsd ?? 0)).slice(0, 150);
+}
+
+/** Merge several lists: one market per coin, the first source wins (Coinbase before others). */
+export function mergePerps(...lists: PerpMarket[][]): PerpMarket[] {
+  const seen = new Set<string>();
+  const out: PerpMarket[] = [];
+  for (const l of lists)
+    for (const m of l) {
+      if (seen.has(m.coin)) continue;
+      seen.add(m.coin);
+      out.push(m);
+    }
+  return out;
+}

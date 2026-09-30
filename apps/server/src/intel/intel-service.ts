@@ -135,8 +135,10 @@ export class IntelService {
   private social: SocialBuzz;
   private leverageBoard: LeverageReading[] = [];
   private leverageAt: number | null = null;
+  private perpDiag: { sources: string[]; errors: string[]; triedAt: number | null } = { sources: [], errors: [], triedAt: null };
   private lastBias = new Map<string, string>();
   private perpOi = new Map<string, number>();
+  private lastDerivatives: CgDerivative[] = [];
   private readonly liq = new Map<string, { ts: number; side: "long" | "short"; usd: number }[]>();
   private pending: IntelBatch = { signals: [], news: [] };
   private flushTimer: ReturnType<typeof setTimeout> | null = null;
@@ -321,6 +323,7 @@ export class IntelService {
   }
 
   onDerivatives(rows: CgDerivative[], now = this.now()) {
+    this.lastDerivatives = rows;
     const agg = aggregateDerivatives(rows);
     this.engine.setDerivatives(agg, now);
     const cands: Candidate[] = [];
@@ -574,8 +577,29 @@ export class IntelService {
     this.emit(this.ingest(cands, now), []);
   }
 
+  /** Last-resort list of leveraged markets: Binance Futures perpetuals from the CoinGecko data. */
+  perpsFromDerivatives(limit = 100): PerpMarket[] {
+    const out: PerpMarket[] = [];
+    const seen = new Set<string>();
+    const rows = this.lastDerivatives.filter((r) => (r.contract_type ?? "").toLowerCase() === "perpetual" && r.index_id).sort((a, b) => (b.open_interest ?? 0) - (a.open_interest ?? 0));
+    for (const r of rows) {
+      const coin = (r.index_id as string).toUpperCase();
+      if (seen.has(coin)) continue;
+      seen.add(coin);
+      out.push({ productId: `${r.symbol}-BINANCE`, coin, name: `${coin} perpétuel`, venue: "Binance Futures", maxLeverage: null, price: r.price, change24h: r.price_percentage_change_24h, fundingPct: r.funding_rate, openInterest: r.open_interest, volume24hUsd: r.volume_24h, url: `https://www.binance.com/en/futures/${r.symbol}` });
+      if (out.length >= limit) break;
+    }
+    return out;
+  }
+
+  /** Where the leveraged markets came from (or why none could be read). */
+  setPerpDiagnostics(sources: string[], errors: string[], now = this.now()) {
+    this.perpDiag = { sources, errors, triedAt: now };
+    if (!sources.length) this.setSourceState("leverage", "down", `aucune source de marchés à levier : ${errors.join(" · ")}`, now);
+  }
+
   leverage() {
-    return { at: this.leverageAt, markets: this.leverageBoard, context: this.marketContext() };
+    return { at: this.leverageAt, markets: this.leverageBoard, context: this.marketContext(), sources: this.perpDiag.sources, errors: this.perpDiag.errors, triedAt: this.perpDiag.triedAt };
   }
 
   // ─── Queries ─────────────────────────────────────────────────────────────

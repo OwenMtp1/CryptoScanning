@@ -38,6 +38,14 @@ C'est un **score de −100 à +100**, calculé avec des règles fixes et entièr
 
 ⚠️ **Ce n'est pas un conseil.** Le levier multiplie les pertes. À ×20, un mouvement de 5 % contre toi fait tout perdre.
 
+**Sources des marchés à levier, en cascade :**
+1. contrats perpétuels de Coinbase Advanced ;
+2. **Coinbase International** : instruments publics, avec le levier max calculé comme 1 / marge initiale ;
+3. à défaut, Binance Futures (public, levier max inconnu) ;
+4. en dernier recours, les données Binance Futures déjà chargées depuis CoinGecko.
+
+Si tout échoue, la page Levier affiche la raison au lieu de charger indéfiniment.
+
 **Coinbase Wallet** ne publie pas d'API pour ses marchés à levier. La page utilise donc les **contrats perpétuels officiels de
 Coinbase**, avec le levier maximal indiqué par Coinbase. Les marchés affichés dépendent de ce que Coinbase propose dans
 ton pays.
