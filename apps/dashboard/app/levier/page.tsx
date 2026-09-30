@@ -48,8 +48,17 @@ export default function LevierPage() {
         (e: Error) => setErr(e.message),
       );
     void load();
+    // Quick retries while the list is still empty, then every 20 s.
+    let n = 0;
+    const quick = setInterval(() => {
+      if (++n > 10) clearInterval(quick);
+      void load();
+    }, 2_000);
     const t = setInterval(load, 20_000);
-    return () => clearInterval(t);
+    return () => {
+      clearInterval(t);
+      clearInterval(quick);
+    };
   }, []);
 
   const all = ordered(d?.markets ?? []);
@@ -79,6 +88,7 @@ export default function LevierPage() {
           <span className="ml-auto text-slate-400">
             {d?.markets.length ?? 0} marché(s) perpétuel(s) Coinbase{d?.at ? ` · mis à jour il y a ${fmtAgo(d.at, now)}` : ""}
             {d?.origin ? ` · lecture ${d.origin === "bot" ? "du bot 24 h/24" : "de cette page"}` : ""}
+            {d?.cached ? " · dernière liste connue, actualisation…" : ""}
             {d?.context?.note ? ` · ${d.context.note}` : ""}
           </span>
         </div>

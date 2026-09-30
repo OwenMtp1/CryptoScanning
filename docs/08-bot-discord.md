@@ -27,7 +27,8 @@ quand ton ordinateur et ton téléphone sont éteints :
   Discord limite chaque salon à environ 30 messages par minute. Si le marché s'emballe et qu'une file se forme, le bot
   regroupe temporairement jusqu'à 5 signaux par message pour ne pas prendre de retard.
 - **Salons :**
-  - les signaux **neutres** (par exemple un volume anormal sans direction) vont dans le salon de `DISCORD_WEBHOOK_URL` ;
+  - les signaux **neutres** (par exemple un volume anormal sans direction) vont dans le salon de `DISCORD_WEBHOOK_NEUTRAL`
+    (ou `DISCORD_WEBHOOK_URL`, l'ancien nom, qui marche toujours) ;
   - si tu n'as mis que les salons haussier et baissier, ils vont **dans les deux**, précédés de ⚪.
 - `DISCORD_MIN_STRENGTH` permet de remettre un seuil si c'est trop bavard. Si tu l'avais mise, supprime-la pour tout
   recevoir.

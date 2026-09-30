@@ -62,6 +62,7 @@ Settings → Variables and Secrets :
 |---|---|---|---|
 | Secret | `RELAY_KEY` | **oui** (pour le relais et le panneau Discord) | ton code de relais (déjà fait si le relais marche) |
 | Secret | `DISCORD_WEBHOOK_LEVERAGE` | facultatif | webhook d'un salon « levier » (indications long/short et liquidations) |
+| Secret | `DISCORD_WEBHOOK_NEUTRAL` | facultatif | webhook d'un salon « neutre » (signaux sans sens clair). Sans lui, les neutres vont dans les salons haussier **et** baissier. |
 | — | `DISCORD_MIN_STRENGTH` | à **supprimer** si elle existe | le seuil se règle maintenant dans le panneau Discord du site |
 
 Rien d'autre à faire : le déploiement est automatique à chaque mise à jour du dépôt.

@@ -46,6 +46,8 @@ import { IntelService, type IntelSavedState } from "../../../apps/server/src/int
 interface Env {
   RADAR: { idFromName(n: string): unknown; get(id: unknown, opts?: { locationHint?: string }): { fetch(url: string, init?: RequestInit): Promise<Response> } };
   DISCORD_WEBHOOK_URL?: string;
+  /** Neutral signals channel (same role as DISCORD_WEBHOOK_URL, clearer name; takes precedence). */
+  DISCORD_WEBHOOK_NEUTRAL?: string;
   /** Optional: separate channels. Bullish / bearish alerts go there; the rest goes to DISCORD_WEBHOOK_URL. */
   DISCORD_WEBHOOK_BULLISH?: string;
   DISCORD_WEBHOOK_BEARISH?: string;
@@ -313,13 +315,13 @@ export class RadarState {
     // and an optional leverage channel that takes the leveraged-market kinds.
     const bull = env.DISCORD_WEBHOOK_BULLISH?.trim() || null;
     const bear = env.DISCORD_WEBHOOK_BEARISH?.trim() || null;
-    const general = env.DISCORD_WEBHOOK_URL?.trim() || null;
+    const general = env.DISCORD_WEBHOOK_NEUTRAL?.trim() || env.DISCORD_WEBHOOK_URL?.trim() || null;
     const lev = env.DISCORD_WEBHOOK_LEVERAGE?.trim() || null;
     const specs: { id: Channel["id"]; label: string; url: string | null; directions: Channel["directions"] }[] = [
       // Without a general channel, neutral signals (a move that can break either way) go to both.
       { id: "bullish", label: "haussier", url: bull, directions: general ? ["bullish"] : ["bullish", "neutral"] },
       { id: "bearish", label: "baissier", url: bear, directions: general ? ["bearish"] : ["bearish", "neutral"] },
-      { id: "general", label: "général", url: general, directions: cfg.discord.directions.filter((d) => !(d === "bullish" && bull) && !(d === "bearish" && bear)) },
+      { id: "general", label: bull && bear ? "neutre" : "général", url: general, directions: cfg.discord.directions.filter((d) => !(d === "bullish" && bull) && !(d === "bearish" && bear)) },
       { id: "leverage", label: "levier", url: lev, directions: ["bullish", "bearish", "neutral"] },
     ];
     const savedDiscord = ((await st.get<Record<string, unknown>>("discord")) ?? {}) as Record<string, unknown>;
@@ -673,9 +675,11 @@ export class RadarState {
             ? "🟢 Ce salon reçoit les signaux **haussiers** (cryptos qui pourraient exploser)."
             : c.id === "bearish"
               ? "🔴 Ce salon reçoit les signaux **baissiers** (cryptos qui pourraient chuter)."
-              : c.directions.length < 2
-                ? `Ce salon reçoit les signaux ${c.directions.includes("bullish") ? "haussiers" : "baissiers"}.`
-                : "Ce salon reçoit tous les signaux (haussiers 🟢 et baissiers 🔴).";
+              : c.directions.length === 1 && c.directions[0] === "neutral"
+                ? "⚪ Ce salon reçoit les signaux **neutres** : mouvements forts ou anormaux dont le sens n'est pas encore clair (volume qui explose, open interest, buzz…)."
+                : c.directions.includes("bullish") && c.directions.includes("bearish")
+                  ? "Ce salon reçoit tous les signaux (haussiers 🟢, baissiers 🔴 et neutres ⚪)."
+                  : `Ce salon reçoit les signaux ${c.directions.includes("bullish") ? "haussiers 🟢" : "baissiers 🔴"}${c.directions.includes("neutral") ? " et neutres ⚪" : ""}.`;
         const r = await c.n.test(note);
         if (r.ok) L.welcomed.add(c.id);
         else this.errors.push(`Discord ${c.label} : ${r.message}`);

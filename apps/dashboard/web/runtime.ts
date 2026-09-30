@@ -142,22 +142,54 @@ export async function startWeb(): Promise<DemoBackend> {
     try {
       let r;
       try {
-        r = await fetchText(direct, { timeoutMs: 20_000 });
+        r = await fetchText(direct, { timeoutMs: 6_000 });
         if (r.status !== 200) throw new Error(`HTTP ${r.status}`);
       } catch {
-        r = await fetchText("/api/coinbase/products?type=perp", { timeoutMs: 20_000 });
+        r = await fetchText("/api/coinbase/products?type=perp", { timeoutMs: 15_000 });
       }
       if (r.status !== 200) throw new Error(`HTTP ${r.status}`);
       const markets = parsePerps(JSON.parse(r.text));
-      if (markets.length) svc.onPerps(markets, new Map());
+      if (markets.length) {
+        svc.onPerps(markets, new Map());
+        void refreshLeverage();
+      }
     } catch (err) {
       svc.setSourceState("leverage", "degraded", `marchés à levier Coinbase indisponibles : ${(err as Error).message}`);
     }
   };
-  setTimeout(() => {
-    void pollPerps();
-    setInterval(() => void pollPerps(), 120_000);
-  }, 3_000);
+  void pollPerps();
+  setInterval(() => void pollPerps(), 120_000);
+
+  // Leveraged markets shown on the page: the bot's reading when fresh (richer: long/short ratio, buy flow),
+  // else this page's own reading. Cached (and kept in the browser) so the page opens instantly.
+  const LEV_STORE = "crypto-radar-leverage-v1";
+  const levCache: { data: { at: number | null; markets: unknown[]; origin: string; cached?: boolean } | null; fetchedAt: number } = { data: null, fetchedAt: 0 };
+  try {
+    const raw = localStorage.getItem(LEV_STORE);
+    if (raw) levCache.data = { ...(JSON.parse(raw) as { at: number | null; markets: unknown[]; origin: string }), cached: true };
+  } catch {
+    // no storage
+  }
+  let levRefreshing: Promise<void> | null = null;
+  const refreshLeverage = () =>
+    (levRefreshing ??= (async () => {
+      try {
+        const bot = await botGet<{ at: number | null; markets: unknown[] }>("/api/discord/leverage");
+        const local = svc.leverage();
+        const next = bot?.at && bot.markets.length && Date.now() - bot.at < 15 * 60_000 ? { ...bot, origin: "bot" } : local.markets.length ? { ...local, origin: "site" } : null;
+        if (next) {
+          levCache.data = next;
+          try {
+            localStorage.setItem(LEV_STORE, JSON.stringify(next));
+          } catch {
+            // quota / private mode
+          }
+        }
+        levCache.fetchedAt = Date.now();
+      } finally {
+        levRefreshing = null;
+      }
+    })());
 
   // ── Relay to the Discord bot: the site's signals (Binance real time…) go straight to Discord.
   const readKey = () => {
@@ -352,12 +384,11 @@ export async function startWeb(): Promise<DemoBackend> {
       const u = new URL(path, "https://site.local");
       // Data owned by the 24/7 bot (leveraged markets, long-term statistics, Discord settings).
       if (u.pathname === "/api/intel/leverage") {
-        // The bot's reading is richer (long/short ratio, buy flow, 24/7); the page's own reading fills in
-        // when the bot is not configured or has not answered yet.
-        const bot = await botGet<{ at: number | null; markets: unknown[] }>("/api/discord/leverage");
-        if (bot?.at && bot.markets.length && Date.now() - bot.at < 15 * 60_000) return { ...bot, origin: "bot" };
-        const local = svc.leverage();
-        return { ...local, origin: "site", unavailable: !local.markets.length };
+        // Instant answer from the cache (memory, or this browser's last visit); refreshed in the background.
+        if (Date.now() - levCache.fetchedAt > 20_000) void refreshLeverage();
+        if (levCache.data) return levCache.data;
+        await refreshLeverage();
+        return levCache.data ?? { at: null, markets: [], context: svc.marketContext(), origin: "site", unavailable: true };
       }
       if (u.pathname === "/api/intel/performance" && u.searchParams.get("scope") === "bot") {
         const r = await botGet("/api/discord/stats");

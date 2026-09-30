@@ -226,6 +226,26 @@ describe("Discord worker", () => {
     expect(up.some((t: string) => t.length === 256)).toBe(true); // long title cut, not refused
   });
 
+  it("a dedicated neutral channel (DISCORD_WEBHOOK_NEUTRAL) gets the neutral signals, and only them", async () => {
+    vi.useFakeTimers({ now: Date.UTC(2026, 8, 16, 12, 0), toFake: ["Date"] });
+    const byHook: Record<string, string[]> = {};
+    vi.stubGlobal("fetch", vi.fn(async (u: string, i?: { method?: string; body?: string }) => {
+      if (u.startsWith("https://discord.com/")) (byHook[u.split("/")[5]!] ??= []).push(i?.body ?? "");
+      return fakeFetch(u, i);
+    }));
+    const st = storage();
+    const env = { RADAR: {} as never, DISCORD_WEBHOOK_BULLISH: "https://discord.com/api/webhooks/1/up", DISCORD_WEBHOOK_BEARISH: "https://discord.com/api/webhooks/2/down", DISCORD_WEBHOOK_NEUTRAL: "https://discord.com/api/webhooks/3/mid", SITE_URL: SITE, RELAY_KEY: "k-123456789012345" };
+    const obj = new RadarState({ storage: st } as never, env);
+    price = 1;
+    await obj.fetch(new Request("https://radar/scan"));
+    expect(byHook["3"]![0]).toContain("signaux **neutres**");
+    const sig = { ts: Date.now(), coinName: null, source: "binance", strength: 50, reasons: [], priceUsd: null, url: null, kind: "VOLUME_SURGE", coin: "SOLX" };
+    await obj.fetch(new Request("https://radar/relay", { method: "POST", headers: { "x-relay-key": "k-123456789012345" }, body: JSON.stringify({ signals: [{ ...sig, id: "n1", direction: "neutral", title: "SOLX volume x6" }] }) }));
+    expect(byHook["3"]!.slice(1).map((b) => JSON.parse(b).embeds[0].title)).toEqual(["SOLX volume x6"]);
+    expect(byHook["1"]!.slice(1).some((b) => b.includes("SOLX volume"))).toBe(false);
+    expect(byHook["2"]!.slice(1).some((b) => b.includes("SOLX volume"))).toBe(false);
+  });
+
   it("prefs helpers", () => {
     const s = { id: "x", ts: 0, coin: "SOL", coinName: null, kind: "PUMP_EARLY" as const, direction: "bullish" as const, source: "binance" as const, strength: 60, title: "t", reasons: [], metrics: {}, priceUsd: 1, url: null };
     expect(passesPrefs(defaultPrefs(), s, null)).toBe(true);
