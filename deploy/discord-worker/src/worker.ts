@@ -41,6 +41,8 @@ import {
   type ExchangeId,
   EXCHANGE_NAME,
   EXCHANGE_TICKER_URLS,
+  BINANCE_WEB_PRODUCTS_URL,
+  parseBinanceWebProducts,
   parseExchangeTickers,
 } from "../../../packages/core/src/index";
 import { DiscordNotifier } from "../../../apps/server/src/intel/discord-notifier";
@@ -49,6 +51,8 @@ import { loadPerpMarkets } from "../../../apps/server/src/intel/perp-sources";
 import { IntelService, type IntelSavedState } from "../../../apps/server/src/intel/intel-service";
 import { runSetup } from "../../../apps/server/src/intel/setup-scanner";
 import { marketPointEmbed } from "../../../apps/server/src/intel/market-point";
+
+const cutText = (t: string, n: number) => (t.length <= n ? t : `${t.slice(0, n - 1)}…`);
 
 interface Env {
   RADAR: { idFromName(n: string): unknown; get(id: unknown, opts?: { locationHint?: string }): { fetch(url: string, init?: RequestInit): Promise<Response> } };
@@ -354,7 +358,10 @@ export class RadarState {
     binanceHost: number;
     /** What happened to each recent signal on Discord (shown next to it on the site). */
     marks: Map<string, { st: DiscordMark; at: number }>;
-    binanceDiag: { host: string | null; okAt: number | null; lastError: string | null; tried: Record<string, string> };
+    binanceDiag: { host: string | null; okAt: number | null; lastError: string | null; webError?: string | null; tried: Record<string, string> };
+    /** Since when no Binance access works (null = it works), and when the Discord warning was last sent. */
+    binanceDownSince: number | null;
+    binanceAlertAt: number;
     coinbaseBackoffUntil: number;
     /** coin:kind → last sent (shared by the bot's own signals and the site's relayed ones). */
     seen: Map<string, number>;
@@ -496,7 +503,7 @@ export class RadarState {
         ...(role && /^\d+$/.test(role) ? { mentionRoleId: role } : {}),
       },
     });
-    const meta = (await st.get<{ warm?: boolean; welcomed?: string[]; lastFullRunAt?: number; relay?: { received: number; lastAt: number | null; rejected?: number }; sentLog?: number[]; seen?: Record<string, number>; stage?: number; lastCycleAt?: number | null; exchangeTurn?: number; setupTurn?: number; lastPointAt?: number; binanceHost?: number; marks?: Record<string, { st: DiscordMark; at: number }> }>("meta")) ?? {};
+    const meta = (await st.get<{ warm?: boolean; welcomed?: string[]; lastFullRunAt?: number; relay?: { received: number; lastAt: number | null; rejected?: number }; sentLog?: number[]; seen?: Record<string, number>; stage?: number; lastCycleAt?: number | null; exchangeTurn?: number; setupTurn?: number; lastPointAt?: number; binanceHost?: number; binanceDownSince?: number | null; binanceAlertAt?: number; marks?: Record<string, { st: DiscordMark; at: number }> }>("meta")) ?? {};
 
     // Channel routing: one webhook per direction when configured, the general webhook for the rest,
     // and an optional leverage channel that takes the leveraged-market kinds.
@@ -535,7 +542,9 @@ export class RadarState {
       binanceBackoffUntil: 0,
       binanceHost: meta.binanceHost ?? 0,
       marks: new Map(Object.entries(meta.marks ?? {})),
-      binanceDiag: { host: null, okAt: null, lastError: null, tried: {} },
+      binanceDiag: { host: null, okAt: null, lastError: null, webError: null, tried: {} } as { host: string | null; okAt: number | null; lastError: string | null; webError?: string | null; tried: Record<string, string> },
+      binanceDownSince: meta.binanceDownSince ?? null,
+      binanceAlertAt: meta.binanceAlertAt ?? 0,
       coinbaseBackoffUntil: 0,
       seen: new Map(Object.entries(meta.seen ?? {})),
       prefs: { ...defaultPrefs(0), ...storedPrefs, batch, marketPoint: { ...defaultPrefs().marketPoint, ...(storedPrefs.marketPoint ?? {}) }, leverage: { ...defaultLeveragePrefs(), ...((await st.get<Partial<DiscordPrefs>>("prefs"))?.leverage ?? {}) } },
@@ -715,7 +724,7 @@ export class RadarState {
       const base = BINANCE_HOSTS[L.binanceHost % BINANCE_HOSTS.length] as string;
       const text = await this.get(`Binance ${base.replace("https://", "")}`, `${base}${path}`, true);
       if (text !== null && text.trimStart().startsWith("[")) {
-        L.binanceDiag = { host: base, okAt: this.clock, lastError: null, tried: {} };
+        L.binanceDiag = { ...L.binanceDiag, host: base, okAt: this.clock, lastError: null, tried: {} };
         return text;
       }
       const why = text !== null ? "réponse inattendue" : (this.lastGetError ?? "sans réponse");
@@ -791,43 +800,72 @@ export class RadarState {
     }
 
     // Every run: Binance (all pairs), 5 / 15 min moves and 24 h breakouts (weight 80 / call).
-    if (now >= L.binanceBackoffUntil) {
-      const text = await this.binanceGet(L, "/api/v3/ticker/24hr?type=MINI&symbolStatus=TRADING");
-      const base = BINANCE_HOSTS[L.binanceHost % BINANCE_HOSTS.length] as string;
-      const tickers = text ? arr<BinanceMiniRestTicker>(text, BinanceMiniRestTickerSchema) : [];
-      if (tickers.length) {
-        // Buy / sell flow for the coins that are moving (klines 1 min: taker-buy share of the volume).
-        const movers = L.binance
-          .preview(tickers, now)
-          .filter((x) => Math.abs(x.change5m ?? 0) >= L.cfg.binance.pumpPct5m * 0.5 || Math.abs(x.change15m ?? 0) >= L.cfg.binance.pumpPct15m * 0.5)
-          .sort((a, b) => Math.abs(b.change5m ?? 0) - Math.abs(a.change5m ?? 0))
-          .slice(0, 4);
-        for (const m of movers) {
-          const k = await this.get(`Flux ${m.pair}`, `${base}/api/v3/klines?symbol=${m.pair}&interval=1m&limit=5`, true);
-          if (!k) continue;
-          try {
-            const rows = JSON.parse(k) as unknown[][];
-            const q = rows.reduce((a, r) => a + Number(r[7]), 0);
-            const tb = rows.reduce((a, r) => a + Number(r[10]), 0);
-            if (q > 0 && Number.isFinite(tb)) L.flow.set(m.coin, tb / q);
-          } catch {
-            // ignore a malformed answer
+    // 1) the official API (8 hosts in turn), 2) else Binance's website product list (another network).
+    {
+      let tickers: BinanceMiniRestTicker[] = [];
+      let via: string | null = null;
+      let apiBase: string | null = null;
+      let apiNote = "";
+      if (now >= L.binanceBackoffUntil) {
+        const text = await this.binanceGet(L, "/api/v3/ticker/24hr?type=MINI&symbolStatus=TRADING");
+        tickers = text ? arr<BinanceMiniRestTicker>(text, BinanceMiniRestTickerSchema) : [];
+        if (tickers.length) {
+          apiBase = BINANCE_HOSTS[L.binanceHost % BINANCE_HOSTS.length] as string;
+          via = apiBase.replace("https://", "");
+        } else {
+          // After a full turn of refusals, the API is left alone for 10 min.
+          const allRefused = Object.keys(L.binanceDiag.tried).length >= BINANCE_HOSTS.length;
+          L.binanceBackoffUntil = now + (allRefused ? 10 * 60_000 : 20_000);
+          if (allRefused) L.binanceDiag.tried = {};
+          apiNote = `API refusée (${L.binanceDiag.lastError ?? "sans réponse"})`;
+        }
+      } else apiNote = `API en pause jusqu'à ${new Date(L.binanceBackoffUntil).toISOString().slice(11, 16)} UTC (${L.binanceDiag.lastError ?? "refus"})`;
+      if (!tickers.length) {
+        const w = await this.get("Binance (site web)", BINANCE_WEB_PRODUCTS_URL, true);
+        try {
+          tickers = w ? parseBinanceWebProducts(JSON.parse(w), now) : [];
+        } catch {
+          tickers = [];
+        }
+        if (tickers.length) via = "binance.com (site web)";
+        else L.binanceDiag.webError = w === null ? (this.lastGetError ?? "sans réponse") : "réponse illisible";
+      }
+      if (tickers.length && via) {
+        L.binanceDiag.okAt = now;
+        L.binanceDiag.host = via;
+        L.binanceDownSince = null;
+        if (apiBase) L.binanceDiag.lastError = null;
+        // Buy / sell flow for the coins that are moving (klines 1 min, API only: taker-buy share of the volume).
+        if (apiBase) {
+          const movers = L.binance
+            .preview(tickers, now)
+            .filter((x) => Math.abs(x.change5m ?? 0) >= L.cfg.binance.pumpPct5m * 0.5 || Math.abs(x.change15m ?? 0) >= L.cfg.binance.pumpPct15m * 0.5)
+            .sort((a, b) => Math.abs(b.change5m ?? 0) - Math.abs(a.change5m ?? 0))
+            .slice(0, 4);
+          for (const m of movers) {
+            const k = await this.get(`Flux ${m.pair}`, `${apiBase}/api/v3/klines?symbol=${m.pair}&interval=1m&limit=5`, true);
+            if (!k) continue;
+            try {
+              const rows = JSON.parse(k) as unknown[][];
+              const q = rows.reduce((a, r) => a + Number(r[7]), 0);
+              const tb = rows.reduce((a, r) => a + Number(r[10]), 0);
+              if (q > 0 && Number.isFinite(tb)) L.flow.set(m.coin, tb / q);
+            } catch {
+              // ignore a malformed answer
+            }
           }
         }
         svc.onBinanceTickers(tickers, L.binance, now, L.flow);
         const pairs = tickers.map((t) => ({ pair: t.symbol, coin: this.baseOf(t.symbol) })).filter((x) => x.coin !== x.pair);
         svc.ingestExternal(this.listingCandidates("binance", pairs), now);
-        sources.binance = `${L.binance.pick(tickers, now).length} cryptos via ${base.replace("https://", "")}`;
+        sources.binance = `${L.binance.pick(tickers, now).length} cryptos via ${via}${apiNote ? ` · ${apiNote}` : ""}`;
       } else {
-        // Every host tried this round refused: the next rounds continue with the following hosts;
-        // after a full turn without success, pause 10 min (Coinbase and the other exchanges cover).
-        const allRefused = Object.keys(L.binanceDiag.tried).length >= BINANCE_HOSTS.length;
-        L.binanceBackoffUntil = now + (allRefused ? 10 * 60_000 : 20_000);
-        if (allRefused) L.binanceDiag.tried = {};
-        sources.binance = `refusé : ${L.binanceDiag.lastError ?? "sans réponse"}${allRefused ? " (tous les accès Binance essayés, nouvel essai dans 10 min ; Coinbase et les autres plateformes prennent le relais)" : " (essai d'un autre accès Binance au prochain passage)"}`;
-        this.errors.push(`Binance : ${L.binanceDiag.lastError ?? "sans réponse"}`);
+        L.binanceDownSince ??= now;
+        L.binanceDiag.host = null;
+        sources.binance = `refusé : ${apiNote} · site web : ${L.binanceDiag.webError ?? "refusé"} → Coinbase et les autres plateformes prennent le relais`;
+        this.errors.push(`Binance : ${apiNote} · site web : ${L.binanceDiag.webError ?? "refusé"}`);
       }
-    } else sources.binance = `en pause jusqu'à ${new Date(L.binanceBackoffUntil).toISOString().slice(11, 16)} UTC (tous les accès Binance ont refusé ; dernier motif : ${L.binanceDiag.lastError ?? "?"})`;
+    }
 
     // Every run: Coinbase (every listed crypto, one call).
     if (now >= L.coinbaseBackoffUntil) {
@@ -941,7 +979,7 @@ export class RadarState {
             },
             svc,
             coin,
-            { btcTrend: L.btcTrend.value, emit: L.warm, skipBinance: now < L.binanceBackoffUntil || L.binanceDiag.okAt === null, binanceBase: BINANCE_HOSTS[L.binanceHost % BINANCE_HOSTS.length], now },
+            { btcTrend: L.btcTrend.value, emit: L.warm, skipBinance: now < L.binanceBackoffUntil || L.binanceDiag.okAt === null || L.binanceDiag.host === "binance.com (site web)", binanceBase: BINANCE_HOSTS[L.binanceHost % BINANCE_HOSTS.length], now },
           );
           if (coin === "BTC") L.btcTrend = { value: r.trend, at: now };
           done++;
@@ -960,14 +998,35 @@ export class RadarState {
     }
     svc.tickOutcomes(now);
 
+    // Binance refusing the bot for 30 min: say so on Discord (once every 6 h), with the exact reason.
+    const infoChannels = (() => {
+      const general = L.channels.filter((c) => c.id === "general");
+      return general.length ? general : L.channels.filter((c) => c.id !== "leverage");
+    })();
+    if (L.warm && L.binanceDownSince !== null && now - L.binanceDownSince >= 30 * 60_000 && now - L.binanceAlertAt >= 6 * 3_600_000) {
+      L.binanceAlertAt = now;
+      const e = {
+        title: "⚠️ Binance refuse l'accès du bot",
+        description: cutText(
+          `Depuis ${Math.round((now - L.binanceDownSince) / 60_000)} min, Binance refuse les requêtes du bot (serveur Cloudflare).\n` +
+            `• API : ${L.binanceDiag.lastError ?? "refusée"}\n• Site web binance.com : ${L.binanceDiag.webError ?? "refusé"}\n\n` +
+            "En attendant : Coinbase, OKX, KuCoin et MEXC couvrent les mouvements, et **les signaux Binance partent sur Discord quand le site est ouvert** sur un appareil où le code de relais est entré (le navigateur lit Binance directement). Le bot réessaie tout seul.",
+          1800,
+        ),
+        color: 0xf59e0b,
+        timestamp: new Date(now).toISOString(),
+      };
+      for (const c of infoChannels) c.n.enqueue([e]);
+    }
+
     // « Point marché »: the site's overview on Discord, on the neutral / general channel (else bull + bear).
     const mpEvery = L.prefs.marketPoint?.everyMin ?? 60;
     if (L.warm && L.prefs.enabled && L.prefs.marketPoint?.enabled !== false && Math.floor(now / (mpEvery * 60_000)) > Math.floor(L.lastPointAt / (mpEvery * 60_000))) {
       L.lastPointAt = now;
-      const embed = marketPointEmbed(svc, now, { siteUrl: site || null, everyMin: mpEvery });
-      const general = L.channels.filter((c) => c.id === "general");
-      const targets = general.length ? general : L.channels.filter((c) => c.id !== "leverage");
-      for (const c of targets) c.n.enqueue([embed]);
+      const bn = L.binanceDiag.host ? `Binance ✅ (${L.binanceDiag.host})` : `Binance ❌ (${L.binanceDiag.lastError ?? L.binanceDiag.webError ?? "refusé"})`;
+      const others = ["coinbase", "okx", "kucoin", "mexc", "leverage"].map((k) => `${{ coinbase: "Coinbase", okx: "OKX", kucoin: "KuCoin", mexc: "MEXC", leverage: "Levier" }[k]} ${sources[k] || (k === "coinbase" && now < L.coinbaseBackoffUntil) ? (sources[k] ? "✅" : "⏸") : "·"}`);
+      const embed = marketPointEmbed(svc, now, { siteUrl: site || null, everyMin: mpEvery, sourcesLine: [bn, ...others].join(" · ") });
+      for (const c of infoChannels) c.n.enqueue([embed]);
     }
 
     await this.flushDiscord();
@@ -1071,7 +1130,7 @@ export class RadarState {
 
   private meta(L: NonNullable<RadarState["loaded"]>) {
     const seen = Object.fromEntries([...L.seen].filter(([, t]) => t > this.clock - 30 * 60_000));
-    return { warm: L.warm, welcomed: [...L.welcomed], lastFullRunAt: L.lastFullRunAt, stage: L.stage, lastCycleAt: L.lastCycleAt, exchangeTurn: L.exchangeTurn, setupTurn: L.setupTurn, lastPointAt: L.lastPointAt, binanceHost: L.binanceHost, marks: Object.fromEntries([...L.marks].filter(([, v]) => v.at > this.clock - 3 * 3_600_000).slice(-1500)), relay: L.relay, sentLog: L.sentLog.filter((t) => t > this.clock - 86_400_000).slice(-20000), seen };
+    return { warm: L.warm, welcomed: [...L.welcomed], lastFullRunAt: L.lastFullRunAt, stage: L.stage, lastCycleAt: L.lastCycleAt, exchangeTurn: L.exchangeTurn, setupTurn: L.setupTurn, lastPointAt: L.lastPointAt, binanceHost: L.binanceHost, binanceDownSince: L.binanceDownSince, binanceAlertAt: L.binanceAlertAt, marks: Object.fromEntries([...L.marks].filter(([, v]) => v.at > this.clock - 3 * 3_600_000).slice(-1500)), relay: L.relay, sentLog: L.sentLog.filter((t) => t > this.clock - 86_400_000).slice(-20000), seen };
   }
 
   private discordView(L: NonNullable<RadarState["loaded"]>) {

@@ -64,3 +64,22 @@ export function parseExchangeTickers(ex: ExchangeId, json: unknown, now: number)
   }
   return out;
 }
+
+/** Binance's website product list (a different network from the API; last resort for the bot). */
+export const BINANCE_WEB_PRODUCTS_URL = "https://www.binance.com/bapi/asset/v2/public/asset-service/product/get-products?includeEtf=false";
+
+/**
+ * `{ data: [{ s: "BTCUSDT", st: "TRADING", o, h, l, c, qv, … }] }` → the same tickers as the API
+ * (`ticker/24hr?type=MINI`), so the Binance detectors work unchanged.
+ */
+export function parseBinanceWebProducts(json: unknown, now: number): BinanceMiniRestTicker[] {
+  const list = (json as { data?: unknown })?.data;
+  if (!Array.isArray(list)) return [];
+  const out: BinanceMiniRestTicker[] = [];
+  for (const r of list as Record<string, unknown>[]) {
+    if (typeof r.s !== "string" || (r.st !== undefined && r.st !== "TRADING")) continue;
+    const t = { symbol: r.s, openPrice: Number(r.o), highPrice: Number(r.h), lowPrice: Number(r.l), lastPrice: Number(r.c), quoteVolume: Number(r.qv), closeTime: now };
+    if ([t.openPrice, t.highPrice, t.lowPrice, t.lastPrice, t.quoteVolume].every(Number.isFinite) && t.lastPrice > 0) out.push(t);
+  }
+  return out;
+}

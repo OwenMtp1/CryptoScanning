@@ -8,7 +8,7 @@ import type { IntelService } from "./intel-service.js";
 const cut = (s: string, n: number) => (s.length <= n ? s : `${s.slice(0, n - 1)}…`);
 const pct = (x: number | null | undefined, d = 1) => (x === null || x === undefined || !Number.isFinite(x) ? "—" : `${x > 0 ? "+" : ""}${x.toFixed(d).replace(".", ",")} %`);
 
-export function marketPointEmbed(svc: IntelService, now: number, opts: { siteUrl?: string | null; everyMin: number }): DiscordEmbed {
+export function marketPointEmbed(svc: IntelService, now: number, opts: { siteUrl?: string | null; everyMin: number; sourcesLine?: string }): DiscordEmbed {
   const ctx = svc.marketContext();
   const t = svc.trends(now);
   const rows = svc.universe({ sort: "change1h", dir: "desc", limit: 40 }).rows;
@@ -48,6 +48,7 @@ export function marketPointEmbed(svc: IntelService, now: number, opts: { siteUrl
       [
         `**Contexte :** ${ctx.note}`,
         `**Signaux sur ${opts.everyMin} min :** 🟢 ${n("bullish")} haussiers · 🔴 ${n("bearish")} baissiers · ⚪ ${n("neutral")} neutres${conf.length ? ` · confluences : ${[...new Set(conf)].slice(0, 8).join(", ")}` : ""}`,
+        opts.sourcesLine ? `**Sources du bot :** ${opts.sourcesLine}` : "",
         `**Actus :** ${t.totals.posts1h} titres sur 1 h, humeur ${t.totals.sentiment24h >= 0.2 ? "plutôt positive 🟢" : t.totals.sentiment24h <= -0.2 ? "plutôt négative 🔴" : "partagée ⚪"} sur 24 h`,
         site && /^https:\/\//.test(site) ? `[Voir les tendances](${site}/#tendances) · [Flux](${site}/#)` : "",
       ]

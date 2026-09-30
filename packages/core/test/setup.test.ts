@@ -93,3 +93,12 @@ describe("analyzeSetup safety", () => {
     expect(s.warnings.join(" ")).toMatch(/volatilité extrême/);
   });
 });
+
+import { parseBinanceWebProducts } from "../src/index.js";
+describe("Binance website products", () => {
+  it("reads the product list into API-like tickers (trading pairs only)", () => {
+    const t = parseBinanceWebProducts({ data: [{ s: "BTCUSDT", st: "TRADING", o: "100", h: "110", l: "90", c: "105", qv: "5000" }, { s: "OLDUSDT", st: "BREAK", o: "1", h: "1", l: "1", c: "1", qv: "1" }, { s: "BADUSDT", st: "TRADING", c: "x" }] }, 42);
+    expect(t).toEqual([{ symbol: "BTCUSDT", openPrice: 100, highPrice: 110, lowPrice: 90, lastPrice: 105, quoteVolume: 5000, closeTime: 42 }]);
+    expect(parseBinanceWebProducts({ code: "error" }, 1)).toEqual([]);
+  });
+});

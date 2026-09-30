@@ -271,3 +271,18 @@ Le mode est actif par défaut et se règle dans la page Discord, carte « Envoi 
   Il est envoyé dans le salon neutre, sinon dans les salons haussier et baissier.
 - **Le Flux du site repasse sur « Tout ce qui est détecté » par défaut.** Le filtre « Seulement ce qui est parti sur
   Discord » reste disponible pour comparer.
+
+## 15. Binance côté bot : un accès de secours et un diagnostic dans Discord
+
+- **Le constat.** Le radar Coinbase ne traite que les cryptos absentes du flux Binance du bot. Si toutes les alertes
+  viennent de Coinbase, c'est donc que Binance n'arrive pas au bot. Le cas typique : Binance refuse l'adresse Cloudflare
+  du bot, pour sa région ou parce qu'une même adresse, partagée, envoie trop de requêtes.
+- **Le bot essaie maintenant, dans l'ordre :**
+  1. l'API officielle, via 8 accès à tour de rôle ;
+  2. sinon, la liste des produits du **site web binance.com** (`/bapi/…/get-products`), qui passe par un autre réseau
+     et donne les mêmes prix et variations. Les détections Binance fonctionnent alors sans changement ; seul le « flux
+     d'achats agressifs » (bougies 1 min) manque.
+- **Si tout refuse pendant 30 min,** le bot le dit dans Discord (une fois toutes les 6 h) avec les motifs exacts. Chaque
+  « Point marché » affiche aussi l'état des sources du bot (Binance ✅ ou ❌ avec le motif, Coinbase, OKX, KuCoin, MEXC).
+- **En dernier recours,** les signaux Binance partent quand le site est ouvert sur un appareil où le code de relais est
+  entré : ton navigateur lit Binance directement.

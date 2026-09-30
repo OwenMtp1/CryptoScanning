@@ -52,7 +52,11 @@ function fakeFetch(url: string, init?: { method?: string; body?: string }) {
     return res("{}");
   }
   const bnHost = /^https:\/\/(data-api\.binance\.vision|api\d?\.binance\.com|api-gcp\.binance\.com|www\.binance\.com)\//.exec(url)?.[1];
-  if (bnHost && binanceBlocked.includes(bnHost)) return res(JSON.stringify({ code: 0, msg: "Service unavailable from a restricted location" }), 451);
+  if (url.includes("/bapi/asset/")) {
+    if (binanceBlocked.includes("web")) return res("blocked", 403);
+    return res(JSON.stringify({ code: "000000", data: [{ s: "WIFUSDT", st: "TRADING", b: "WIF", q: "USDT", o: "1", h: "2", l: "0.5", c: String(price), qv: "90000000" }] }));
+  }
+  if (bnHost && (binanceBlocked.includes(bnHost) || binanceBlocked.includes("all-api"))) return res(JSON.stringify({ code: 0, msg: "Service unavailable from a restricted location" }), 451);
   if (bnHost && url.includes("/api/v3/klines") && url.includes("interval=1h") && klines1h) return res(JSON.stringify(klines1h));
   if (bnHost) return res(JSON.stringify([{ symbol: "WIFUSDT", openPrice: "1", highPrice: "2", lowPrice: "0.5", lastPrice: String(price), volume: "1", quoteVolume: "90000000", openTime: 0, closeTime: Date.now() }]));
   if (url.includes("product_type=FUTURE")) return res(JSON.stringify({ products: perps }));
@@ -418,7 +422,7 @@ describe("Discord worker", () => {
       vi.setSystemTime(Date.now() + 5 * 60_000);
       price = 1.08;
       const s = await run();
-      expect(s.binance.host).toBe("https://api.binance.com");
+      expect(s.binance.host).toBe("api.binance.com");
       expect(s.sources.binance).toContain("api.binance.com");
       // The old DISCORD_MIN_STRENGTH no longer hides weaker signals.
       expect(posted.map((p) => p.body).join(" ")).toContain("WIF décolle");
@@ -512,5 +516,36 @@ describe("Discord worker", () => {
     vi.setSystemTime(Date.UTC(2026, 8, 24, 12, 20));
     await run();
     expect(posted.map((p) => JSON.parse(p.body)).filter((m) => m.embeds?.[0]?.title?.startsWith("📊")).length).toBe(n);
+  });
+
+  it("Binance API refused everywhere: Binance's website list keeps Binance alerts going; if that fails too, Discord is told why", async () => {
+    vi.useFakeTimers({ now: Date.UTC(2026, 8, 25, 12, 0), toFake: ["Date"] });
+    posted.length = 0;
+    binanceBlocked = ["all-api"];
+    try {
+      vi.stubGlobal("fetch", vi.fn(async (u: string, i?: { method?: string; body?: string }) => fakeFetch(u, i)));
+      const st = storage();
+      const env = { RADAR: {} as never, DISCORD_WEBHOOK_URL: WEBHOOK, SITE_URL: SITE };
+      const run = () => scan3(() => new RadarState({ storage: st } as never, env));
+      price = 1;
+      await run();
+      vi.setSystemTime(Date.now() + 5 * 60_000);
+      price = 1.08;
+      const s = await run();
+      expect(s.binance.host).toBe("binance.com (site web)");
+      expect(s.sources.binance).toContain("via binance.com (site web)");
+      expect(posted.map((p) => p.body).join(" ")).toContain("WIF décolle");
+      // Now the website is refused too: after 30 min, one warning on Discord with the reasons.
+      binanceBlocked = ["all-api", "web"];
+      for (let k = 0; k < 12; k++) {
+        vi.setSystemTime(Date.now() + 5 * 60_000);
+        await run();
+      }
+      const warnings = posted.filter((p) => p.body.includes("Binance refuse l'accès du bot"));
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]!.body).toContain("HTTP 451");
+    } finally {
+      binanceBlocked = [];
+    }
   });
 });
