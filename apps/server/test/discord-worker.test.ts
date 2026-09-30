@@ -4,8 +4,10 @@ import worker, { RadarState, passesPrefs, sanitizePrefs, defaultPrefs } from "..
 const WEBHOOK = "https://discord.com/api/webhooks/123/tok_EN-secret";
 const SITE = "https://crypto-radar.pages.dev";
 
-function storage() {
+/** Bot storage. By default the tests check one message per alert (grouped sending off). */
+function storage(opts: { batch?: boolean } = {}) {
   const m = new Map<string, unknown>();
+  if (!opts.batch) m.set("prefs", { batch: { enabled: false, everyMin: 5, maxPerMessage: 10 } });
   return { m, get: async (k: string) => structuredClone(m.get(k)), put: async (e: Record<string, unknown>) => void Object.entries(e).forEach(([k, v]) => m.set(k, structuredClone(v))) };
 }
 
@@ -443,5 +445,37 @@ describe("Discord worker", () => {
     await obj.fetch(new Request("https://radar/prefs", { method: "POST", headers: { "x-relay-key": "k-123" }, body: JSON.stringify({ ...defaultPrefs(), minStrength: 50 }) }));
     const r2 = await relay([{ ...sig, id: "s4", coin: "DEFX" }]);
     expect(r2.results.s4).toBe("filtered");
+  });
+
+  it("grouped sending: one message per channel every 5 min with up to 10 alerts, the rest in the next message", async () => {
+    vi.useFakeTimers({ now: Date.UTC(2026, 8, 23, 12, 0, 30), toFake: ["Date"] });
+    const bodies: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (u: string, i?: { method?: string; body?: string }) => {
+      if (u.startsWith("https://discord.com/")) bodies.push(i?.body ?? "");
+      return fakeFetch(u, i);
+    }));
+    const st = storage({ batch: true }); // default settings: grouped every 5 min, 10 per message
+    const env = { RADAR: {} as never, DISCORD_WEBHOOK_URL: WEBHOOK, SITE_URL: SITE, RELAY_KEY: "k" };
+    const obj = new RadarState({ storage: st } as never, env);
+    const relay = (signals: unknown[]) => obj.fetch(new Request("https://radar/relay", { method: "POST", headers: { "x-relay-key": "k" }, body: JSON.stringify({ signals }) }));
+    const sig = (i: number) => ({ id: `g${i}`, ts: Date.now(), coin: `C${i}X`, kind: "PUMP_EARLY", direction: "bullish", source: "binance", strength: 60, title: `C${i}X décolle`, reasons: ["r".repeat(900)], priceUsd: 1, url: null });
+    await relay(Array.from({ length: 14 }, (_, i) => sig(i)));
+    const alerts = () => bodies.map((b) => JSON.parse(b)).filter((m) => m.embeds?.some((e: { title: string }) => /C\d+X/.test(e.title)));
+    // Welcome + first grouped message right away: 10 alerts, 4 reported.
+    expect(alerts()).toHaveLength(1);
+    expect(alerts()[0].embeds).toHaveLength(10);
+    expect(alerts()[0].content).toContain("4 reportées");
+    const chars = alerts()[0].embeds.reduce((a: number, e: { title: string; description?: string; footer?: { text: string }; fields?: { name: string; value: string }[] }) => a + e.title.length + (e.description?.length ?? 0) + (e.footer?.text.length ?? 0) + (e.fields ?? []).reduce((x, f) => x + f.name.length + f.value.length, 0), 0);
+    expect(chars).toBeLessThanOrEqual(6000);
+    // Same 5-minute slot: nothing more.
+    vi.setSystemTime(Date.now() + 60_000);
+    await relay([sig(20)]);
+    expect(alerts()).toHaveLength(1);
+    // Next slot: the 4 reported + the new one, in order.
+    vi.setSystemTime(Date.UTC(2026, 8, 23, 12, 5, 10));
+    await obj.fetch(new Request("https://radar/scan"));
+    expect(alerts()).toHaveLength(2);
+    expect(alerts()[1].embeds.map((e: { title: string }) => e.title)).toEqual(["C10X décolle", "C11X décolle", "C12X décolle", "C13X décolle", "C20X décolle"]);
+    expect(alerts()[1].content).not.toContain("reportée");
   });
 });

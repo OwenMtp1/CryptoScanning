@@ -201,3 +201,18 @@ est `app/tendances/page.tsx`.
   détail.
 - **Secteurs en tendance.** Ce sont les catégories CoinGecko, avec la variation de leur capitalisation.
 - Les animations sont coupées si le téléphone ou l'ordinateur demande moins d'animations (réglage d'accessibilité).
+
+## 11. Envoi groupé sur Discord (tous les salons)
+
+Le mode est actif par défaut et se règle dans la page Discord, carte « Envoi groupé ».
+
+- **Un message par salon et par période.** Toutes les 5 min, à heure fixe (:00, :05, :10…), chaque salon reçoit un
+  seul message avec les alertes arrivées entre-temps. Cela vaut pour les salons haussier, baissier, neutre et levier.
+- **Jusqu'à 10 alertes par message**, dans la limite de 6 000 caractères de Discord. Le texte de chaque alerte est
+  raccourci à environ 380 caractères pour que 10 tiennent.
+- **Le surplus attend.** S'il y a plus d'alertes que ce qui tient, le reste part au message suivant, dans l'ordre
+  d'arrivée. L'en-tête l'indique : « 📡 10 alertes · 12:05 · 4 reportées au prochain envoi ».
+- **Réglages :** l'intervalle (1 à 60 min), le nombre maximal par message (1 à 10) ou l'arrêt du mode (une
+  notification par alerte, tout de suite).
+- **Si la file grossit trop :** au rythme de 10 alertes toutes les 5 min (120 par heure et par salon), une journée
+  très agitée peut prendre du retard. Réduis alors l'intervalle ou filtre les types les plus bavards.

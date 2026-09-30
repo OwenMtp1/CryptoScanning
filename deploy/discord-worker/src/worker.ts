@@ -143,6 +143,8 @@ export interface DiscordPrefs {
   minHitRate: number | null;
   /** Leveraged markets (LONG / SHORT indications and liquidations). */
   leverage: LeveragePrefs;
+  /** Grouped sending, every channel: one message every `everyMin` min with up to `maxPerMessage` alerts. */
+  batch: { enabled: boolean; everyMin: number; maxPerMessage: number };
   updatedAt: number | null;
 }
 
@@ -171,7 +173,7 @@ export function defaultLeveragePrefs(): LeveragePrefs {
 }
 
 export function defaultPrefs(minStrength = 0): DiscordPrefs {
-  return { enabled: true, minStrength, kinds: [], sources: [], directions: ["bullish", "bearish", "neutral"], includeCoins: [], excludeCoins: [], minHitRate: null, leverage: defaultLeveragePrefs(), updatedAt: null };
+  return { enabled: true, minStrength, kinds: [], sources: [], directions: ["bullish", "bearish", "neutral"], includeCoins: [], excludeCoins: [], minHitRate: null, leverage: defaultLeveragePrefs(), batch: { enabled: true, everyMin: 5, maxPerMessage: 10 }, updatedAt: null };
 }
 
 /** Validate prefs sent by the site (strict, bounded). */
@@ -205,8 +207,11 @@ export function sanitizePrefs(x: unknown, now: number): DiscordPrefs | null {
     liquidations: lv.liquidations !== false,
     minLiquidationUsd: Math.round(bounded(lv.minLiquidationUsd, 0, 1e9, d.minLiquidationUsd)),
   };
+  const bt = (o.batch && typeof o.batch === "object" ? o.batch : {}) as Record<string, unknown>;
+  const batch = { enabled: bt.enabled !== false, everyMin: Math.round(bounded(bt.everyMin, 1, 60, 5)), maxPerMessage: Math.round(bounded(bt.maxPerMessage, 1, 10, 10)) };
   return {
     leverage,
+    batch,
     enabled: o.enabled !== false,
     minStrength: Math.round(ms),
     kinds: list(o.kinds, (k) => KINDS.has(k as IntelKind)),
@@ -410,6 +415,7 @@ export class RadarState {
           await this.run(async () => {
             const L = await this.load();
             L.prefs = p;
+            for (const c of L.channels) c.n.setBatch(p.batch.enabled ? p.batch : null);
             await this.state.storage.put({ prefs: p });
             return { ok: true, prefs: p };
           }),
@@ -510,6 +516,9 @@ export class RadarState {
         n.importState((savedDiscord[c.id] ?? (c.id === "general" && "lastCoinAt" in savedDiscord ? savedDiscord : undefined)) as never);
         return { id: c.id, label: c.label, directions: c.directions, n };
       });
+    const storedPrefs = (await st.get<Partial<DiscordPrefs>>("prefs")) ?? {};
+    const batch = { ...defaultPrefs().batch, ...(storedPrefs.batch ?? {}) };
+    for (const c of channels) c.n.setBatch(batch.enabled ? batch : null);
 
     const loaded = {
       cfg,
@@ -522,7 +531,7 @@ export class RadarState {
       binanceDiag: { host: null, okAt: null, lastError: null, tried: {} },
       coinbaseBackoffUntil: 0,
       seen: new Map(Object.entries(meta.seen ?? {})),
-      prefs: { ...defaultPrefs(0), ...((await st.get<Partial<DiscordPrefs>>("prefs")) ?? {}), leverage: { ...defaultLeveragePrefs(), ...((await st.get<Partial<DiscordPrefs>>("prefs"))?.leverage ?? {}) } },
+      prefs: { ...defaultPrefs(0), ...storedPrefs, batch, leverage: { ...defaultLeveragePrefs(), ...((await st.get<Partial<DiscordPrefs>>("prefs"))?.leverage ?? {}) } },
       recentSent: (await st.get<{ ts: number; dir: Direction; kind: IntelKind; coin: string; channel: string }[]>("recentSent")) ?? [],
       listings: (() => {
         return { cb: new Set<string>(), cbCoins: new Set<string>(), bn: new Set<string>(), seededCb: false, seededBn: false };

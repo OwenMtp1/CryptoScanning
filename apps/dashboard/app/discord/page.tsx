@@ -25,6 +25,7 @@ interface Prefs {
   excludeCoins: string[];
   minHitRate: number | null;
   leverage?: LeveragePrefs;
+  batch?: { enabled: boolean; everyMin: number; maxPerMessage: number };
   updatedAt: number | null;
 }
 interface LeveragePrefs {
@@ -140,6 +141,8 @@ export default function DiscordPage() {
   const allSources = p.sources.length === 0;
   const lv: LeveragePrefs = { ...LEV_DEFAULT, ...(p.leverage ?? {}) };
   const setLv = (patch: Partial<LeveragePrefs>) => setP({ ...p, leverage: { ...lv, ...patch } });
+  const bt = { enabled: true, everyMin: 5, maxPerMessage: 10, ...(p.batch ?? {}) };
+  const setBt = (patch: Partial<typeof bt>) => setP({ ...p, batch: { ...bt, ...patch } });
 
   const save = async () => {
     setBusy(true);
@@ -253,6 +256,41 @@ export default function DiscordPage() {
             {busy ? "Enregistrement…" : "Enregistrer"}
           </button>
           {p.updatedAt && <span className="text-xs text-slate-500">dernière modification : {new Date(p.updatedAt).toLocaleString("fr-FR")}</span>}
+        </div>
+      </Card>
+
+      <Card title="📦 Envoi groupé (tous les salons)">
+        <label className="flex items-center gap-2 text-sm">
+          <input type="checkbox" checked={bt.enabled} onChange={(e) => setBt({ enabled: e.target.checked })} />
+          <span className="font-semibold">Regrouper les alertes</span>
+          <span className="text-slate-500">(décoché : une notification par alerte, tout de suite)</span>
+        </label>
+        <div className={`mt-3 grid gap-6 sm:grid-cols-2 ${bt.enabled ? "" : "opacity-50"}`}>
+          <div>
+            <div className="text-xs font-semibold uppercase text-slate-400">Un message toutes les</div>
+            <div className="mt-1 flex flex-wrap gap-1">
+              {[1, 2, 5, 10, 15, 30, 60].map((m) => (
+                <button key={m} type="button" disabled={!bt.enabled} onClick={() => setBt({ everyMin: m })} className={`rounded px-2.5 py-1.5 text-sm ${bt.everyMin === m ? "bg-indigo-600 text-white" : "bg-slate-800 text-slate-300"}`}>
+                  {m} min
+                </button>
+              ))}
+            </div>
+          </div>
+          <div>
+            <div className="text-xs font-semibold uppercase text-slate-400">Alertes par message (au plus)</div>
+            <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1">
+              <input type="range" min={1} max={10} step={1} value={bt.maxPerMessage} disabled={!bt.enabled} onChange={(e) => setBt({ maxPerMessage: Number(e.target.value) })} className="w-full max-w-64 min-w-0 flex-1 sm:w-64 sm:flex-none" />
+              <span className="num w-10 text-lg font-bold">{bt.maxPerMessage}</span>
+            </div>
+          </div>
+        </div>
+        <p className="mt-3 text-[11px] text-slate-500">
+          Toutes les {bt.everyMin} min (à heure fixe), chaque salon reçoit <strong>un seul message</strong> avec les alertes arrivées entre-temps : jusqu&apos;à {bt.maxPerMessage}, dans la limite de 6 000 caractères de Discord (texte de chaque alerte raccourci). S&apos;il y en a plus, le reste part au message suivant, dans l&apos;ordre d&apos;arrivée, et le message l&apos;indique (« N reportées »). Si la file grossit trop, augmente le nombre par message ou réduis l&apos;intervalle.
+        </p>
+        <div className="mt-3">
+          <button onClick={() => void save()} disabled={busy} className="rounded bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-500 disabled:opacity-40">
+            {busy ? "Enregistrement…" : "Enregistrer"}
+          </button>
         </div>
       </Card>
 

@@ -31,7 +31,7 @@ function fmtPrice(p: number | null): string {
   return p >= 1 ? `$${p.toLocaleString("en-US", { maximumFractionDigits: 4 })}` : `$${p.toPrecision(4)}`;
 }
 
-export function signalEmbed(s: IntelSignal, hitRatePct: number | null): DiscordEmbed {
+export function signalEmbed(s: IntelSignal, hitRatePct: number | null, opts: { maxDescription?: number } = {}): DiscordEmbed {
   const fields = [
     { name: "Force", value: `${s.strength}/100`, inline: true },
     { name: "Direction", value: `${ICON[s.direction]} ${s.direction === "bullish" ? "haussier" : s.direction === "bearish" ? "baissier" : "neutre"}`, inline: true },
@@ -40,7 +40,7 @@ export function signalEmbed(s: IntelSignal, hitRatePct: number | null): DiscordE
   if (hitRatePct !== null) fields.push({ name: "Historique de ce signal", value: `${hitRatePct.toFixed(0)} % de réussite à 1 h`, inline: true });
   return {
     title: cut(s.title, 256),
-    description: cut(s.reasons.map((r) => `• ${r}`).join("\n"), 1500),
+    description: cut(s.reasons.map((r) => `• ${r}`).join("\n"), opts.maxDescription ?? 1500),
     url: s.url ?? undefined,
     color: COLORS[s.direction],
     fields,
@@ -65,8 +65,11 @@ export function newsEmbed(n: NewsItem): DiscordEmbed {
 }
 
 /** Pack embeds into messages respecting the 10-embed and 6000-char limits. */
+/** Characters Discord counts in an embed (title, description, fields, footer). */
+export const embedSize = (e: DiscordEmbed) => e.title.length + (e.description?.length ?? 0) + (e.footer?.text.length ?? 0) + (e.fields ?? []).reduce((s, f) => s + f.name.length + f.value.length, 0);
+
 export function packMessages(embeds: DiscordEmbed[], opts: { username?: string; content?: string; mentionRole?: string | null } = {}): DiscordMessage[] {
-  const size = (e: DiscordEmbed) => e.title.length + (e.description?.length ?? 0) + (e.footer?.text.length ?? 0) + (e.fields ?? []).reduce((s, f) => s + f.name.length + f.value.length, 0);
+  const size = embedSize;
   const out: DiscordMessage[] = [];
   let cur: DiscordEmbed[] = [];
   let total = 0;

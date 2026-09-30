@@ -8,7 +8,7 @@
  * The webhook URL is a secret (it contains the token): it comes only from
  * the environment, is never logged and never sent to the dashboard.
  */
-import { packMessages, signalEmbed, type DiscordEmbed, type DiscordMessage, type IntelConfig, type IntelSignal } from "@radar/core";
+import { embedSize, packMessages, signalEmbed, type DiscordEmbed, type DiscordMessage, type IntelConfig, type IntelSignal } from "@radar/core";
 import type { LogFn } from "../market-data/source.js";
 import type { FetchText } from "./http.js";
 
@@ -26,6 +26,8 @@ export interface DiscordView {
   queued: number;
   digestPending: number;
   nextDigestAt: number | null;
+  /** Grouped sending: next batch time and alerts waiting for it. */
+  batch: { everyMin: number; maxPerMessage: number; pending: number; nextAt: number | null } | null;
   lastError: string | null;
   pausedUntil: number | null;
   minStrength: number;
@@ -41,7 +43,22 @@ export interface DiscordNotifierOptions {
   now?: () => number;
 }
 
+/** Grouped sending: one message per channel every `everyMin` minutes (clock-aligned). */
+export interface BatchMode {
+  everyMin: number;
+  /** 1–10 alerts per message (Discord: 10 embeds and 6000 characters at most). */
+  maxPerMessage: number;
+}
+
+/** Characters kept per alert in a grouped message, so that about 10 fit in Discord's 6000. */
+const BATCH_DESCRIPTION = 380;
+const MAX_CHARS = 5800;
+
 export class DiscordNotifier {
+  private batch: BatchMode | null = null;
+  /** Alerts waiting for the next grouped message (oldest first). */
+  private pending: IntelSignal[] = [];
+  private lastSlot = 0;
   private readonly url: string | null;
   private readonly queue: DiscordMessage[] = [];
   private urgent: IntelSignal[] = [];
@@ -81,6 +98,16 @@ export class DiscordNotifier {
     this.timer = null;
   }
 
+  /** Switch grouped sending on (every N min, up to M alerts per message) or off (null). */
+  setBatch(b: BatchMode | null) {
+    this.batch = b ? { everyMin: Math.max(1, Math.min(60, Math.round(b.everyMin))), maxPerMessage: Math.max(1, Math.min(10, Math.round(b.maxPerMessage))) } : null;
+    if (!this.batch && this.pending.length) {
+      // Back to one message per alert: what was waiting leaves now.
+      this.urgent.push(...this.pending);
+      this.pending = [];
+    }
+  }
+
   /** Decide what happens to a new signal: immediate alert, digest, or nothing. */
   consider(s: IntelSignal): "urgent" | "digest" | "skip" {
     const c = this.o.cfg;
@@ -98,7 +125,10 @@ export class DiscordNotifier {
         return c.digestMin > 0 ? "digest" : "skip";
       }
       this.lastCoinAt.set(key, now);
-      this.urgent.push(s);
+      if (this.batch) {
+        this.pending.push(s);
+        if (this.pending.length > 3000) this.pending.splice(0, this.pending.length - 3000);
+      } else this.urgent.push(s);
       return "urgent";
     }
     if (c.digestMin > 0 && s.strength >= c.minStrength - 15) {
@@ -143,6 +173,37 @@ export class DiscordNotifier {
     this.queue.push(...packMessages(embeds, { mentionRole: mention, content: mention ? "Signal fort" : undefined }));
   }
 
+  /**
+   * Grouped message: at each new time slot (e.g. :00, :05, :10…), one message with the oldest waiting
+   * alerts, as many as fit (count and characters). The rest waits for the next slot, in order.
+   */
+  private buildBatch(now: number) {
+    const b = this.batch;
+    if (!b || !this.pending.length || this.queue.length) return;
+    const slot = Math.floor(now / (b.everyMin * 60_000));
+    if (slot <= this.lastSlot) return;
+    this.lastSlot = slot;
+    const embeds: DiscordEmbed[] = [];
+    let chars = 0;
+    let taken = 0;
+    for (const s of this.pending) {
+      if (embeds.length >= b.maxPerMessage) break;
+      const e = signalEmbed(s, this.o.hitRateOf(s), { maxDescription: BATCH_DESCRIPTION });
+      const size = embedSize(e);
+      if (embeds.length && chars + size > MAX_CHARS) break;
+      embeds.push(e);
+      chars += size;
+      taken++;
+    }
+    const sent = this.pending.splice(0, taken);
+    const rest = this.pending.length;
+    const c = this.o.cfg;
+    const mention = c.mentionRoleId && sent.some((s) => s.strength >= c.mentionMinStrength) ? c.mentionRoleId : null;
+    const at = new Date(now).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit", timeZone: "Europe/Paris" });
+    const head = `📡 **${sent.length} alerte${sent.length > 1 ? "s" : ""}** · ${at}${rest ? ` · ${rest} reportée${rest > 1 ? "s" : ""} au prochain envoi (dans ${b.everyMin} min)` : ""}`;
+    this.queue.push(...packMessages(embeds, { mentionRole: mention, content: head }).slice(0, 1));
+  }
+
   private buildDigest(now: number) {
     const c = this.o.cfg;
     if (c.digestMin <= 0 || now - this.lastDigestAt < c.digestMin * 60_000) return;
@@ -182,6 +243,7 @@ export class DiscordNotifier {
     const now = this.now();
     if (!this.url || this.sending) return 0;
     this.buildUrgent(now);
+    this.buildBatch(now);
     this.buildDigest(now);
     if (now < this.pausedUntil) return 0;
     this.sending = true;
@@ -245,7 +307,7 @@ export class DiscordNotifier {
   /** Persistable state (for a scheduled worker that restarts between runs). */
   exportState() {
     const dayAgo = this.now() - 86_400_000;
-    return { lastCoinAt: Object.fromEntries([...this.lastCoinAt].filter(([, t]) => t > dayAgo)), sentAt: [...this.sentAt], lastSentAt: this.lastSentAt, lastDigestAt: this.lastDigestAt, digest: this.digest.slice(-200), queue: this.queue.slice(0, 1500), lastError: this.lastError, pausedUntil: this.pausedUntil };
+    return { lastCoinAt: Object.fromEntries([...this.lastCoinAt].filter(([, t]) => t > dayAgo)), sentAt: [...this.sentAt], lastSentAt: this.lastSentAt, lastDigestAt: this.lastDigestAt, digest: this.digest.slice(-200), queue: this.queue.slice(0, 1500), pending: this.pending.slice(-1500), lastSlot: this.lastSlot, lastError: this.lastError, pausedUntil: this.pausedUntil };
   }
 
   importState(s: Partial<ReturnType<DiscordNotifier["exportState"]>> | null | undefined) {
@@ -256,6 +318,8 @@ export class DiscordNotifier {
     if (s.lastDigestAt) this.lastDigestAt = s.lastDigestAt;
     this.digest.push(...(s.digest ?? []));
     this.queue.push(...(s.queue ?? []));
+    this.pending.push(...(s.pending ?? []));
+    this.lastSlot = s.lastSlot ?? this.lastSlot;
     this.lastError = s.lastError ?? this.lastError;
     this.pausedUntil = s.pausedUntil ?? 0;
   }
@@ -284,9 +348,10 @@ export class DiscordNotifier {
       lastSentAt: this.lastSentAt,
       sentLastHour: this.sentLastHour(now),
       maxPerHour: c.maxMessagesPerHour,
-      queued: this.queue.length + this.urgent.length,
+      queued: this.queue.length + this.urgent.length + this.pending.length,
       digestPending: this.digest.length,
       nextDigestAt: c.digestMin > 0 ? this.lastDigestAt + c.digestMin * 60_000 : null,
+      batch: this.batch ? { ...this.batch, pending: this.pending.length, nextAt: (Math.floor(now / (this.batch.everyMin * 60_000)) + 1) * this.batch.everyMin * 60_000 } : null,
       lastError: this.lastError,
       pausedUntil: this.pausedUntil > now ? this.pausedUntil : null,
       minStrength: c.minStrength,
