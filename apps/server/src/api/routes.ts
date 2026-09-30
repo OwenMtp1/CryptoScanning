@@ -60,7 +60,7 @@ function handleIntel(ctx: RouteContext, pathname: string, params: URLSearchParam
   if (!intel) return { status: 404, body: { error: "intel_disabled" } };
   const dir = params.get("direction");
   const direction = dir && DIRECTIONS.has(dir) ? (dir as "bullish" | "bearish" | "neutral") : undefined;
-  const limit = Math.min(2000, Math.max(1, numParam(params.get("limit")) ?? 300));
+  const limit = Math.min(5000, Math.max(1, numParam(params.get("limit")) ?? 300));
   if (pathname === "/api/intel/feed") {
     return ok(
       intel.feed({

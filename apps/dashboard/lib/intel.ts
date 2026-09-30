@@ -1,6 +1,20 @@
 import type { CoinRow, Direction, IntelKind, IntelSignal, IntelSource, KindStats, NewsItem, SourceHealth, TrackedSignal } from "@radar/core";
 
-export type FeedSignal = IntelSignal & { hitRate1h?: number | null };
+export type FeedSignal = IntelSignal & { hitRate1h?: number | null; discord?: string | null };
+
+/** What happened to a signal on Discord, in words (null = unknown, e.g. local server). */
+export function discordMarkLabel(m: string | null | undefined): { text: string; tone: "ok" | "wait" | "off" | "bad" } | null {
+  if (!m) return null;
+  if (m === "sent") return { text: "✓ envoyé sur Discord", tone: "ok" };
+  if (m === "queued") return { text: "⏳ en route vers Discord", tone: "wait" };
+  if (m === "dup") return { text: "Discord : déjà envoyé (même événement, même source, < 30 min)", tone: "off" };
+  if (m === "filtered") return { text: "Discord : écarté par tes réglages (page Discord)", tone: "bad" };
+  if (m === "nokey") return { text: "Discord : non envoyé, code de relais absent sur cet appareil", tone: "bad" };
+  if (m === "cold") return { text: "Discord : bot en démarrage (1re analyse)", tone: "off" };
+  if (m === "nochannel") return { text: "Discord : aucun salon pour ce sens", tone: "bad" };
+  if (m.startsWith("refused:")) return { text: `Discord : refusé (${m.slice(8)})`, tone: "bad" };
+  return { text: `Discord : ${m}`, tone: "off" };
+}
 export interface MarketContextView {
   btcChange1h: number | null;
   btcChange24h: number | null;

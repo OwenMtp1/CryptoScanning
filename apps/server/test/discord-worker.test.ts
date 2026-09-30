@@ -425,4 +425,23 @@ describe("Discord worker", () => {
       binanceBlocked = [];
     }
   });
+
+  it("tells the site what happened on Discord to every relayed signal", async () => {
+    vi.useFakeTimers({ now: Date.UTC(2026, 8, 22, 12, 0), toFake: ["Date"] });
+    posted.length = 0;
+    vi.stubGlobal("fetch", vi.fn(async (u: string, i?: { method?: string; body?: string }) => fakeFetch(u, i)));
+    const st = storage();
+    const env = { RADAR: {} as never, DISCORD_WEBHOOK_URL: WEBHOOK, SITE_URL: SITE, RELAY_KEY: "k-123" };
+    const obj = new RadarState({ storage: st } as never, env);
+    // Not warmed up yet: the site's live signals are still sent.
+    const sig = { id: "s1", ts: Date.now(), coin: "ABCX", kind: "PUMP_EARLY", direction: "bullish", source: "binance", strength: 5, title: "ABCX décolle", reasons: [], priceUsd: 1, url: null };
+    const relay = async (signals: unknown[]) => (await (await obj.fetch(new Request("https://radar/relay", { method: "POST", headers: { "x-relay-key": "k-123" }, body: JSON.stringify({ signals }) }))).json()) as { results: Record<string, string> };
+    const r = await relay([sig, { ...sig, id: "s2" }, { ...sig, id: "s3", kind: "NOPE" }]);
+    expect(r.results).toEqual({ s1: "sent", s2: "dup", s3: "refused:type" });
+    expect(posted.some((p) => p.body.includes("ABCX décolle"))).toBe(true);
+    // Filtered by the settings → said so.
+    await obj.fetch(new Request("https://radar/prefs", { method: "POST", headers: { "x-relay-key": "k-123" }, body: JSON.stringify({ ...defaultPrefs(), minStrength: 50 }) }));
+    const r2 = await relay([{ ...sig, id: "s4", coin: "DEFX" }]);
+    expect(r2.results.s4).toBe("filtered");
+  });
 });

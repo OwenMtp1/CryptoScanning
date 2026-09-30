@@ -149,3 +149,24 @@ Points vérifiés sans problème :
   - Un menu « Source des prix » permet d'imposer une plateforme.
 - **Setups plus sûrs.** Un objectif de prix n'est jamais négatif. Un setup dont le stop serait à plus de 25 % du prix
   passe en « attendre » (volatilité extrême).
+
+## 9. Flux et Discord alignés
+
+- **Statut Discord sous chaque signal du Flux.** Les statuts possibles :
+  - « ✓ envoyé sur Discord » ;
+  - « en route » ;
+  - « déjà envoyé » (même événement, même source, moins de 30 min) ;
+  - « écarté par tes réglages » ;
+  - « non envoyé, code de relais absent sur cet appareil » ;
+  - « refusé (motif) ».
+
+  Un bandeau résume l'heure écoulée et dit quoi faire (réglages trop stricts, code de relais manquant, salon manquant).
+- **Réponse du bot par signal.** Le relais répond pour chaque signal (`results`). La route `/signals` du bot donne le
+  statut de ses propres signaux (`discord`).
+- **Le bot n'ignore plus rien pendant son démarrage.** Les signaux relayés par le site partent même pendant la toute
+  première analyse. Un nouveau salon reçoit son message de bienvenue et les alertes dans le même passage.
+- **Le Flux montre tout ce que le bot envoie.** Un signal du bot n'est fusionné avec celui du site que s'il vient de
+  la **même source**. Il suit jusqu'à 1 500 signaux du bot et en garde 3 000 dans le navigateur. La liste affiche 300
+  signaux et un bouton en charge 300 de plus.
+- **La file d'envoi vers Discord est gardée dans le navigateur.** Un rechargement ou un onglet fermé ne perd plus les
+  signaux en attente (40 min au plus).

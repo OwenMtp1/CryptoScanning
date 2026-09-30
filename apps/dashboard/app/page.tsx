@@ -25,10 +25,11 @@ export default function FluxPage() {
   const [coin, setCoin] = useState("");
   const [paused, setPaused] = useState(false);
   const [frozen, setFrozen] = useState<FeedSignal[] | null>(null);
+  const [shown, setShown] = useState(300);
 
   useEffect(() => {
     const load = () => {
-      getJson<FeedResponse>("/api/intel/feed?limit=1000").then(
+      getJson<FeedResponse>("/api/intel/feed?limit=3000").then(
         (r) => {
           setBase(r);
           setError(null);
@@ -41,7 +42,7 @@ export default function FluxPage() {
       getJson<UniverseResponse>("/api/intel/universe?sort=change1h&dir=asc&limit=8").then((down) => setMovers((m) => ({ ...m, down })), () => {});
     };
     load();
-    const t = setInterval(load, 30_000);
+    const t = setInterval(load, 10_000);
     return () => clearInterval(t);
   }, []);
 
@@ -49,10 +50,12 @@ export default function FluxPage() {
   const all = useMemo(() => {
     const seen = new Set<string>();
     const out: FeedSignal[] = [];
+    // The periodic reload carries the latest Discord status of each signal: it wins over the live copy.
+    const mark = new Map((base?.signals ?? []).map((s) => [s.id, s.discord]));
     for (const s of [...intel.signals, ...(base?.signals ?? [])]) {
       if (seen.has(s.id)) continue;
       seen.add(s.id);
-      out.push(s);
+      out.push(mark.get(s.id) !== undefined ? { ...s, discord: mark.get(s.id) } : s);
     }
     return out.sort((a, b) => b.ts - a.ts);
   }, [intel.rev, base]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -73,6 +76,9 @@ export default function FluxPage() {
   const okSources = sources?.sources.filter((s) => s.enabled && s.state === "ok").length ?? 0;
   const enabledSources = sources?.sources.filter((s) => s.enabled).length ?? 0;
   const kindsPresent = [...new Set(all.map((s) => s.kind))].sort();
+  // Discord follow-up over the last hour (web site only: the local server has no marks).
+  const marked = lastHour.filter((s) => s.discord);
+  const dc = (m: string) => marked.filter((s) => s.discord === m).length;
 
   if (error && !base)
     return (
@@ -98,6 +104,15 @@ export default function FluxPage() {
         >
           <strong>Contexte :</strong> {base.market.note}
           {base.market.regime !== "calme" && " — les signaux qui vont contre le marché sont affaiblis, ceux qui vont dans son sens renforcés."}
+        </div>
+      )}
+      {marked.length > 0 && (
+        <div className={`rounded border px-3 py-2 text-xs ${dc("nokey") || dc("filtered") || dc("nochannel") ? "border-amber-600/50 bg-amber-500/10 text-amber-100" : "border-slate-800 bg-slate-900/60 text-slate-300"}`}>
+          <strong>Discord (1 h) :</strong> {dc("sent")} envoyés · {dc("queued")} en route · {dc("dup")} doublons (même événement déjà envoyé)
+          {dc("filtered") > 0 && <> · <strong>{dc("filtered")} écartés par tes réglages</strong> (<a href="#discord" className="underline">page Discord</a>, mets la force minimale à 0 et « Tous » pour tout recevoir)</>}
+          {dc("nokey") > 0 && <> · <strong>{dc("nokey")} bloqués sur cet appareil</strong> : entre ton code de relais (<a href="#sources" className="underline">page Sources</a>) pour que ce que ce site détecte parte aussi sur Discord</>}
+          {dc("nochannel") > 0 && <> · {dc("nochannel")} sans salon (ajoute le webhook manquant)</>}
+          {marked.filter((s) => s.discord?.startsWith("refused:")).length > 0 && <> · {marked.filter((s) => s.discord?.startsWith("refused:")).length} refusés</>}
         </div>
       )}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
@@ -180,7 +195,7 @@ export default function FluxPage() {
             </div>
           </Card>
           <div className="space-y-2">
-            {filtered.slice(0, 300).map((s) => (
+            {filtered.slice(0, shown).map((s) => (
               <SignalCard key={s.id} s={s} />
             ))}
             {!filtered.length && (
@@ -190,7 +205,11 @@ export default function FluxPage() {
                 </p>
               </Card>
             )}
-            {filtered.length > 300 && <p className="text-center text-xs text-slate-500">300 premiers affichés sur {filtered.length} — affine les filtres.</p>}
+            {filtered.length > shown && (
+              <button type="button" onClick={() => setShown((n) => n + 300)} className="w-full rounded border border-slate-700 bg-slate-900 py-2 text-sm text-slate-300 hover:bg-slate-800">
+                Afficher 300 de plus ({shown} sur {filtered.length})
+              </button>
+            )}
           </div>
         </div>
 
@@ -209,10 +228,10 @@ export default function FluxPage() {
             </ul>
           </Card>
           <Card title="Plus fortes hausses 1 h">
-            <MoverList data={movers.up} />
+            <MoverList data={movers.up} sign={1} />
           </Card>
           <Card title="Plus fortes baisses 1 h">
-            <MoverList data={movers.down} />
+            <MoverList data={movers.down} sign={-1} />
           </Card>
           <Card title={`Actualités (${allNews.length})`}>
             <NewsList items={allNews} max={60} />
@@ -238,10 +257,14 @@ export default function FluxPage() {
   );
 }
 
-function MoverList({ data }: { data: UniverseResponse | null }) {
+function MoverList({ data, sign }: { data: UniverseResponse | null; sign: 1 | -1 }) {
   if (!data) return <p className="text-sm text-slate-500">…</p>;
-  const rows = data.rows.filter((r) => (r.live?.change1h ?? r.change1h) !== null);
-  if (!rows.length) return <p className="text-sm text-slate-500">Pas encore de données.</p>;
+  // Only real rises in « hausses » and real falls in « baisses ».
+  const rows = data.rows.filter((r) => {
+    const ch = r.live?.change1h ?? r.change1h;
+    return ch !== null && ch * sign > 0;
+  });
+  if (!rows.length) return <p className="text-sm text-slate-500">{data.rows.length ? (sign > 0 ? "Aucune crypto en hausse sur 1 h." : "Aucune crypto en baisse sur 1 h.") : "Pas encore de données."}</p>;
   return (
     <ul className="num space-y-1 text-sm">
       {rows.map((r) => {

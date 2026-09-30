@@ -292,6 +292,12 @@ async function readCapped(req: Request, max: number): Promise<string | null> {
   return new TextDecoder().decode(all);
 }
 
+/**
+ * Fate of a signal on Discord: sent (queued to a channel), dup (the same event from the same source was
+ * sent less than 30 min ago), filtered (Discord settings), cold (bot warming up), nochannel, or refused:<reason>.
+ */
+export type DiscordMark = "sent" | "dup" | "filtered" | "cold" | "nochannel" | `refused:${string}`;
+
 /** Why a relayed signal was refused (counted and shown on the site). */
 export type RelayReject = "format" | "type" | "sens" | "force" | "trop ancien" | "déjà envoyé";
 
@@ -334,6 +340,8 @@ export class RadarState {
     binance: BinanceRestHistory;
     binanceBackoffUntil: number;
     binanceHost: number;
+    /** What happened to each recent signal on Discord (shown next to it on the site). */
+    marks: Map<string, { st: DiscordMark; at: number }>;
     binanceDiag: { host: string | null; okAt: number | null; lastError: string | null; tried: Record<string, string> };
     coinbaseBackoffUntil: number;
     /** coin:kind → last sent (shared by the bot's own signals and the site's relayed ones). */
@@ -439,7 +447,7 @@ export class RadarState {
     if (path === "/signals") {
       const since = Number(new URL(req.url).searchParams.get("since") ?? 0) || Date.now() - 3 * 3_600_000;
       const L = await this.run(() => this.load());
-      return Response.json({ signals: L.svc.engine.recentSignals({ since, limit: 400 }).map((x) => ({ ...x, hitRate1h: L.svc.hitRateOf(x) })) });
+      return Response.json({ signals: L.svc.engine.recentSignals({ since, limit: 1500 }).map((x) => ({ ...x, hitRate1h: L.svc.hitRateOf(x), discord: L.marks.get(x.id)?.st ?? null })) });
     }
     if (path === "/setups") return Response.json((await this.state.storage.get("setupBoard")) ?? { at: null, count: 0, setups: [] });
     if (path === "/leverage") return Response.json((await this.state.storage.get("leverageBoard")) ?? { at: null, markets: [], context: null });
@@ -474,7 +482,7 @@ export class RadarState {
         ...(role && /^\d+$/.test(role) ? { mentionRoleId: role } : {}),
       },
     });
-    const meta = (await st.get<{ warm?: boolean; welcomed?: string[]; lastFullRunAt?: number; relay?: { received: number; lastAt: number | null; rejected?: number }; sentLog?: number[]; seen?: Record<string, number>; stage?: number; lastCycleAt?: number | null; exchangeTurn?: number; setupTurn?: number; binanceHost?: number }>("meta")) ?? {};
+    const meta = (await st.get<{ warm?: boolean; welcomed?: string[]; lastFullRunAt?: number; relay?: { received: number; lastAt: number | null; rejected?: number }; sentLog?: number[]; seen?: Record<string, number>; stage?: number; lastCycleAt?: number | null; exchangeTurn?: number; setupTurn?: number; binanceHost?: number; marks?: Record<string, { st: DiscordMark; at: number }> }>("meta")) ?? {};
 
     // Channel routing: one webhook per direction when configured, the general webhook for the rest,
     // and an optional leverage channel that takes the leveraged-market kinds.
@@ -509,6 +517,7 @@ export class RadarState {
       binance: new BinanceRestHistory(cfg.binance.quotes, (await st.get("bn")) ?? null),
       binanceBackoffUntil: 0,
       binanceHost: meta.binanceHost ?? 0,
+      marks: new Map(Object.entries(meta.marks ?? {})),
       binanceDiag: { host: null, okAt: null, lastError: null, tried: {} },
       coinbaseBackoffUntil: 0,
       seen: new Map(Object.entries(meta.seen ?? {})),
@@ -540,7 +549,10 @@ export class RadarState {
       // Until the first full pass is done, learn silently (no burst of alerts on what already moves).
       notifier: {
         consider: (s) => {
-          if (!loaded.warm) return;
+          if (!loaded.warm) {
+            loaded.marks.set(s.id, { st: "cold", at: Date.now() });
+            return;
+          }
           this.dispatch(s);
         },
         view: () => channels[0]?.n.view() ?? null,
@@ -568,17 +580,22 @@ export class RadarState {
    * Send one signal to its channel(s). The same event (coin × type) seen by
    * both the site and the bot within 30 min is sent once.
    */
-  private dispatch(s: IntelSignal) {
+  private dispatch(s: IntelSignal): DiscordMark {
     const L = this.loaded;
-    if (!L) return;
+    if (!L) return "cold";
+    const mark = (st: DiscordMark): DiscordMark => {
+      L.marks.set(s.id, { st, at: this.clock });
+      if (L.marks.size > 4000) for (const k of [...L.marks.keys()].slice(0, 1000)) L.marks.delete(k);
+      return st;
+    };
     // Per source: Binance and Coinbase seeing the same move are both sent; the same source twice is not.
     const key = `${s.coin}:${s.kind}:${s.direction}:${s.source}`;
     const last = L.seen.get(key);
-    if (last !== undefined && this.clock - last < 30 * 60_000) return;
+    if (last !== undefined && this.clock - last < 30 * 60_000) return mark("dup");
     L.seen.set(key, this.clock);
     if (!passesPrefs(L.prefs, s, L.svc.hitRateOf(s))) {
       L.filtered++;
-      return;
+      return mark("filtered");
     }
     this.signalsThisRun++;
     L.sentLog.push(this.clock);
@@ -590,7 +607,7 @@ export class RadarState {
     if (lev && LEVERAGE_KINDS.has(s.kind)) {
       lev.n.consider(s);
       note(lev.label);
-      return;
+      return mark("sent");
     }
     const targets = L.channels.filter((c) => c.id !== "leverage" && c.directions.includes(s.direction));
     for (const c of targets) {
@@ -602,7 +619,11 @@ export class RadarState {
       lev.n.consider(s);
       note(lev.label);
     }
-    if (!targets.length && !lev) note("aucun salon");
+    if (!targets.length && !lev) {
+      note("aucun salon");
+      return mark("nochannel");
+    }
+    return mark("sent");
   }
 
   /** New pairs / coins compared with everything seen before (the first pass only learns). */
@@ -928,7 +949,7 @@ export class RadarState {
   }
 
   /** Signals relayed by the live site (e.g. Binance real time). */
-  private async relay(body: unknown): Promise<{ ok: boolean; accepted: number; rejected: number; reasons: Partial<Record<RelayReject, number>>; queued: number }> {
+  private async relay(body: unknown): Promise<{ ok: boolean; accepted: number; rejected: number; reasons: Partial<Record<RelayReject, number>>; results: Record<string, DiscordMark>; queued: number }> {
     this.clock = Date.now();
     this.errors = [];
     this.signalsThisRun = 0;
@@ -937,21 +958,31 @@ export class RadarState {
     const list = Array.isArray((body as { signals?: unknown })?.signals) ? (body as { signals: unknown[] }).signals.slice(0, 100) : [];
     let accepted = 0;
     const reasons: Partial<Record<RelayReject, number>> = {};
+    /** Per signal (site id): what happened on Discord. */
+    const results: Record<string, DiscordMark> = {};
+    const idOf = (x: unknown) => {
+      const id = (x as { id?: unknown })?.id;
+      return typeof id === "string" && id.length <= 80 ? id : null;
+    };
     for (const x of list) {
       const s = sanitizeRelayed(x, this.clock);
+      const id = idOf(x);
       if (typeof s === "string") {
         reasons[s] = (reasons[s] ?? 0) + 1;
+        if (id) results[id] = `refused:${s}`;
         continue;
       }
       // The bot computes setups too: a setup it already alerted (same coin, same side, < 12 h) is not repeated.
       if ((s.kind === "SETUP_LONG" || s.kind === "SETUP_SHORT") && !L.svc.claimSetup(s.coin, s.kind === "SETUP_LONG" ? "LONG" : "SHORT", this.clock)) {
         reasons["déjà envoyé"] = (reasons["déjà envoyé"] ?? 0) + 1;
+        if (id) results[id] = "dup";
         continue;
       }
       accepted++;
       L.svc.tracker.track(s, L.svc.engine.priceOf("BTC"));
-      if (!L.warm) continue;
-      this.dispatch(s);
+      // The site's signals are live (not a start-up backlog): sent even while the bot warms up.
+      const m = this.dispatch(s);
+      if (id) results[id] = m;
     }
     L.relay.received += accepted;
     if (accepted) L.relay.lastAt = this.clock;
@@ -963,7 +994,7 @@ export class RadarState {
       ...(prev ? { status: { ...prev, relay: { configured: true, ...L.relay }, discord: this.discordView(L) } } : {}),
     });
     L.relay.rejected = (L.relay.rejected ?? 0) + (list.length - accepted);
-    return { ok: true, accepted, rejected: list.length - accepted, reasons, queued: L.channels.reduce((a, c) => a + (c.n.view().queued ?? 0), 0) };
+    return { ok: true, accepted, rejected: list.length - accepted, reasons, results, queued: L.channels.reduce((a, c) => a + (c.n.view().queued ?? 0), 0) };
   }
 
   private async flushDiscord() {
@@ -993,18 +1024,21 @@ export class RadarState {
         this.budget--;
         const r = await c.n.test(note);
         if (r.ok) L.welcomed.add(c.id);
-        else this.errors.push(`Discord ${c.label} : ${r.message}`);
-      } else {
-        // Share what is left of the request budget between the channels; the rest leaves on the next run (20 s).
-        const share = Math.max(1, Math.floor(this.budget / Math.max(1, active.length)));
-        this.budget -= await c.n.pump(share);
+        else {
+          this.errors.push(`Discord ${c.label} : ${r.message}`);
+          continue;
+        }
       }
+      // Share what is left of the request budget between the channels; the rest leaves on the next run (20 s).
+      if (this.budget <= 0) break;
+      const share = Math.max(1, Math.floor(this.budget / Math.max(1, active.length)));
+      this.budget -= await c.n.pump(share);
     }
   }
 
   private meta(L: NonNullable<RadarState["loaded"]>) {
     const seen = Object.fromEntries([...L.seen].filter(([, t]) => t > this.clock - 30 * 60_000));
-    return { warm: L.warm, welcomed: [...L.welcomed], lastFullRunAt: L.lastFullRunAt, stage: L.stage, lastCycleAt: L.lastCycleAt, exchangeTurn: L.exchangeTurn, setupTurn: L.setupTurn, binanceHost: L.binanceHost, relay: L.relay, sentLog: L.sentLog.filter((t) => t > this.clock - 86_400_000).slice(-20000), seen };
+    return { warm: L.warm, welcomed: [...L.welcomed], lastFullRunAt: L.lastFullRunAt, stage: L.stage, lastCycleAt: L.lastCycleAt, exchangeTurn: L.exchangeTurn, setupTurn: L.setupTurn, binanceHost: L.binanceHost, marks: Object.fromEntries([...L.marks].filter(([, v]) => v.at > this.clock - 3 * 3_600_000).slice(-1500)), relay: L.relay, sentLog: L.sentLog.filter((t) => t > this.clock - 86_400_000).slice(-20000), seen };
   }
 
   private discordView(L: NonNullable<RadarState["loaded"]>) {

@@ -205,19 +205,39 @@ export async function startWeb(): Promise<DemoBackend> {
   };
   const relay = { sent: 0, rejected: 0, lastOkAt: null as number | null, lastError: null as string | null, queued: 0, rejectReasons: {} as Record<string, number> };
   type Relayed = { id: string; ts: number; [k: string]: unknown };
+  // Kept in this browser: a signal waiting for Discord survives a reload or a closed tab (40 min max).
+  const QUEUE_STORE = "crypto-radar-relay-queue-v1";
+  const MARKS_STORE = "crypto-radar-discord-marks-v1";
   let relayQueue: Relayed[] = [];
+  /** Signal id → what happened on Discord ("sent", "dup", "filtered", "queued", "nokey"…). */
+  const marks = new Map<string, string>();
+  try {
+    relayQueue = (JSON.parse(localStorage.getItem(QUEUE_STORE) ?? "[]") as Relayed[]).filter((x) => Date.now() - x.ts < 40 * 60_000);
+    for (const [k, v] of Object.entries(JSON.parse(localStorage.getItem(MARKS_STORE) ?? "{}") as Record<string, string>)) marks.set(k, v);
+  } catch {
+    // no storage
+  }
+  const saveRelay = () => {
+    try {
+      localStorage.setItem(QUEUE_STORE, JSON.stringify(relayQueue.slice(-1500)));
+      localStorage.setItem(MARKS_STORE, JSON.stringify(Object.fromEntries([...marks].slice(-3000))));
+    } catch {
+      // quota / private mode
+    }
+  };
   let relayPauseUntil = 0;
   let sending = false;
   // EVERY signal shown on the site goes into the queue — even before the relay code is entered:
   // the backlog (up to 40 min) is sent as soon as the code is activated.
   svc.subscribe((b) => {
+    for (const s of b.signals) marks.set(s.id, "queued");
     for (const s of b.signals) relayQueue.push({ id: s.id, ts: s.ts, coin: s.coin, coinName: s.coinName, kind: s.kind, direction: s.direction, source: s.source, strength: s.strength, title: s.title, reasons: s.reasons.slice(0, 10), priceUsd: s.priceUsd, url: s.url, metrics: s.metrics });
   });
   const postRelay = async (signals: unknown[], key = readKey()) => {
     const r = await fetchText("/api/discord/relay", { method: "POST", headers: { "content-type": "application/json", "x-relay-key": key }, body: JSON.stringify({ signals }), timeoutMs: 20_000 });
     const body = (() => {
       try {
-        return JSON.parse(r.text) as { ok?: boolean; error?: string; accepted?: number; rejected?: number; reasons?: Record<string, number> };
+        return JSON.parse(r.text) as { ok?: boolean; error?: string; accepted?: number; rejected?: number; reasons?: Record<string, number>; results?: Record<string, string> };
       } catch {
         return {};
       }
@@ -237,6 +257,8 @@ export async function startWeb(): Promise<DemoBackend> {
       // Only remove what was actually delivered to the bot.
       const sentIds = new Set(batch.map((x) => x.id));
       relayQueue = relayQueue.filter((x) => !sentIds.has(x.id));
+      for (const x of batch) marks.set(x.id, b.results?.[x.id] ?? "sent");
+      saveRelay();
       relay.sent += b.accepted ?? 0;
       relay.rejected += b.rejected ?? 0;
       for (const [k, v] of Object.entries(b.reasons ?? {})) relay.rejectReasons[k] = (relay.rejectReasons[k] ?? 0) + v;
@@ -253,6 +275,14 @@ export async function startWeb(): Promise<DemoBackend> {
     }
   };
   setInterval(() => void pumpRelay(), 2000);
+  setInterval(saveRelay, 15_000);
+  window.addEventListener("pagehide", saveRelay);
+  /** Discord status of a signal shown on this page. */
+  const markOf = (id: string): string | null => {
+    const m = marks.get(id);
+    if (m === "queued" && !readKey()) return "nokey";
+    return m ?? null;
+  };
   let botStatus: unknown = null;
   const pollBot = () =>
     fetchText("/api/discord/status", { timeoutMs: 15_000 }).then(
@@ -333,11 +363,17 @@ export async function startWeb(): Promise<DemoBackend> {
   };
   let botSince = Date.now() - 3 * 3_600_000;
   const pullBotSignals = async () => {
-    const r = await botGet<{ signals: import("@radar/core").IntelSignal[] }>(`/api/discord/signals?since=${botSince}`);
+    const r = await botGet<{ signals: (import("@radar/core").IntelSignal & { discord?: string | null })[] }>(`/api/discord/signals?since=${botSince}`);
     if (!r?.signals?.length) return;
-    // Same event already detected by this page within 30 min → keep one card.
+    // Same event from the same source already detected by this page within 30 min → one card
+    // (it carries the bot's Discord status when the bot sent it). Other sources are all shown.
     const mine = svc.engine.recentSignals({ since: Date.now() - 3 * 3_600_000, limit: 5000 });
-    const fresh = r.signals.filter((b) => !mine.some((m) => m.coin === b.coin && m.kind === b.kind && m.direction === b.direction && Math.abs(m.ts - b.ts) < 30 * 60_000));
+    const fresh = r.signals.filter((b) => {
+      if (b.discord) marks.set(`bot-${b.id}`, b.discord);
+      const twin = mine.find((m) => m.coin === b.coin && m.kind === b.kind && m.direction === b.direction && m.source === b.source && Math.abs(m.ts - b.ts) < 30 * 60_000);
+      if (twin && b.discord === "sent" && marks.get(twin.id) !== "sent") marks.set(twin.id, "sent");
+      return !twin;
+    });
     svc.engine.addExternal(fresh.map((x) => ({ ...x, id: `bot-${x.id}`, reasons: [...x.reasons, "détecté par le bot 24 h/24"] })));
     botSince = Math.max(botSince, ...r.signals.map((x) => x.ts));
   };
@@ -401,7 +437,7 @@ export async function startWeb(): Promise<DemoBackend> {
     let keep = 4000;
     for (;;) {
       try {
-        const compact = { ...st, tracker: st.tracker.slice(-keep), engine: { signals: st.engine.signals.slice(-Math.min(800, keep)), news: st.engine.news.slice(-Math.min(400, keep)) } };
+        const compact = { ...st, tracker: st.tracker.slice(-keep), engine: { signals: st.engine.signals.slice(-Math.min(3000, keep)), news: st.engine.news.slice(-Math.min(400, keep)) } };
         localStorage.setItem(STORE_KEY, JSON.stringify(compact));
         return;
       } catch {
@@ -445,6 +481,12 @@ export async function startWeb(): Promise<DemoBackend> {
         if (levCache.data) return levCache.data;
         await refreshLeverage();
         return levCache.data ?? { at: null, markets: [], context: svc.marketContext(), origin: "site", unavailable: true };
+      }
+      if (u.pathname === "/api/intel/feed") {
+        const r = handleGet(ctx, u.pathname, u.searchParams);
+        if (!r || r.status >= 400) throw new Error(`${path} → ${r?.status ?? 404}`);
+        const body = r.body as { signals: { id: string }[] };
+        return { ...body, signals: body.signals.map((x) => ({ ...x, discord: markOf(x.id) })), discordKey: !!readKey() };
       }
       if (u.pathname === "/api/intel/setups") return mergedSetups(u.searchParams.get("bias") ?? undefined);
       if (u.pathname === "/api/web/candles") {
@@ -519,7 +561,7 @@ export async function startWeb(): Promise<DemoBackend> {
       return { status: r.status, body: r.body };
     },
     subscribe(onEvent) {
-      const offIntel = svc.subscribe((b) => onEvent("intel", b));
+      const offIntel = svc.subscribe((b) => onEvent("intel", { ...b, signals: b.signals.map((x) => ({ ...x, discord: markOf(x.id) })) }));
       const offLog = log.subscribe((e: LogEvent) => e.level !== "debug" && onEvent("log", e));
       onEvent("status", null);
       return () => {

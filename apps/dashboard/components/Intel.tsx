@@ -6,7 +6,7 @@ import { CoinChart } from "@/components/CoinChart";
 import { ScoreBar } from "@/components/ui";
 import { getJson } from "@/lib/api";
 import { fmtPct } from "@/lib/format";
-import { KIND_LABEL, SOURCE_CLS, SOURCE_LABEL, dirCls, dirIcon, fmtAgo, fmtBig, fmtUsd, metricChips, safeHref, type CoinDetail, type FeedSignal } from "@/lib/intel";
+import { KIND_LABEL, SOURCE_CLS, SOURCE_LABEL, dirCls, dirIcon, fmtAgo, fmtBig, fmtUsd, metricChips, safeHref, discordMarkLabel, type CoinDetail, type FeedSignal } from "@/lib/intel";
 
 export function SourceBadge({ source }: { source: IntelSource }) {
   return <span className={`rounded px-1.5 py-0.5 text-[10px] font-bold uppercase ${SOURCE_CLS[source]}`}>{SOURCE_LABEL[source]}</span>;
@@ -163,6 +163,13 @@ function Mini({ label, value, pct }: { label: string; value: string; pct?: numbe
 
 // ─── Signal card ────────────────────────────────────────────────────────────
 
+function DiscordMark({ m }: { m: string | null | undefined }) {
+  const l = discordMarkLabel(m);
+  if (!l) return null;
+  const cls = { ok: "text-emerald-400/90", wait: "text-sky-300/90", off: "text-slate-500", bad: "text-amber-300" }[l.tone];
+  return <span className={cls}>{l.text}</span>;
+}
+
 export function SignalCard({ s, compact = false }: { s: FeedSignal; compact?: boolean }) {
   const [open, setOpen] = useState(false);
   const conf = s.kind === "CONFLUENCE";
@@ -198,6 +205,7 @@ export function SignalCard({ s, compact = false }: { s: FeedSignal; compact?: bo
         </div>
       )}
       <div className="mt-1 flex flex-wrap gap-3 text-[11px]">
+        <DiscordMark m={s.discord} />
         <button type="button" className="text-slate-500 hover:text-slate-300" onClick={() => setOpen(!open)}>
           {open ? "▾ masquer le détail" : `▸ pourquoi ? (${s.reasons.length})`}
         </button>
