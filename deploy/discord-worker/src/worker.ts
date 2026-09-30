@@ -17,15 +17,18 @@
  * Webhook URLs and the relay key are Worker SECRETS and are never returned.
  */
 import {
-  CgDerivativeSchema,
+  BinanceMiniRestTickerSchema,
+  BinanceRestHistory,
+  CgDerivativeExchangeSchema,
   CgMarketRowSchema,
+  derivativeRowsFromExchange,
   CgTrendingSchema,
   CoinbasePriceHistory,
   GtPoolsSchema,
   IntelConfigSchema,
   parseFeed,
   parseProductsPage,
-  type CgDerivative,
+  type BinanceMiniRestTicker,
   type CgMarketRow,
   type IntelConfig,
   type IntelKind,
@@ -38,7 +41,7 @@ import { fetchText } from "../../../apps/server/src/intel/http";
 import { IntelService, type IntelSavedState } from "../../../apps/server/src/intel/intel-service";
 
 interface Env {
-  RADAR: { idFromName(n: string): unknown; get(id: unknown): { fetch(url: string, init?: RequestInit): Promise<Response> } };
+  RADAR: { idFromName(n: string): unknown; get(id: unknown, opts?: { locationHint?: string }): { fetch(url: string, init?: RequestInit): Promise<Response> } };
   DISCORD_WEBHOOK_URL?: string;
   /** Optional: separate channels. Bullish / bearish alerts go there; the rest goes to DISCORD_WEBHOOK_URL. */
   DISCORD_WEBHOOK_BULLISH?: string;
@@ -60,6 +63,8 @@ interface DOState {
 }
 
 const FAST_MS = 20_000;
+/** Name of the live instance. An older instance (e.g. before the move to Europe) stops its own loop. */
+const ACTIVE = "eu-1";
 const FULL_MS = 5 * 60_000;
 const KINDS = new Set<IntelKind>(["PUMP_EARLY", "DUMP_EARLY", "VOLUME_SURGE", "BREAKOUT_24H_HIGH", "BREAKDOWN_24H_LOW", "TOP_MOVER_1H", "CRASH_1H", "VOLUME_MCAP_ANOMALY", "NEAR_ATH", "TRENDING_ENTRY", "FUNDING_EXTREME_LONG", "FUNDING_EXTREME_SHORT", "OPEN_INTEREST_SURGE", "DEX_NEW_POOL_TRACTION", "DEX_TRENDING_PUMP", "DEX_RUG_RISK", "NEWS_BULLISH", "NEWS_BEARISH", "CONFLUENCE"]);
 const SOURCES = new Set<IntelSource>(["coinbase", "binance", "coingecko", "trending", "derivatives", "dex", "news"]);
@@ -102,7 +107,7 @@ export function sanitizeRelayed(x: unknown, now: number): IntelSignal | null {
   const title = str(s.title, 300);
   if (!id || !coin || !/^[A-Z0-9._-]+$/.test(coin) || !title) return null;
   if (!KINDS.has(s.kind as IntelKind) || !SOURCES.has(s.source as IntelSource)) return null;
-  if (s.direction !== "bullish" && s.direction !== "bearish") return null;
+  if (s.direction !== "bullish" && s.direction !== "bearish" && s.direction !== "neutral") return null;
   const strength = Number(s.strength);
   const ts = Number(s.ts);
   if (!Number.isFinite(strength) || strength < 0 || strength > 100) return null;
@@ -120,6 +125,11 @@ export class RadarState {
     cfg: IntelConfig;
     svc: IntelService;
     history: CoinbasePriceHistory;
+    binance: BinanceRestHistory;
+    binanceBackoffUntil: number;
+    coinbaseBackoffUntil: number;
+    /** coin:kind → last sent (shared by the bot's own signals and the site's relayed ones). */
+    seen: Map<string, number>;
     channels: Channel[];
     warm: boolean;
     welcomed: Set<string>;
@@ -143,6 +153,8 @@ export class RadarState {
 
   async fetch(req: Request): Promise<Response> {
     const path = new URL(req.url).pathname;
+    // Requests only reach the live instance (the stub below): mark it as such.
+    if (path === "/scan" || path === "/ensure" || path === "/relay") await this.state.storage.put({ active: ACTIVE });
     if (path === "/scan") return Response.json(await this.run(() => this.scan()));
     if (path === "/ensure") return Response.json({ restarted: await this.ensureLoop() });
     if (path === "/relay") {
@@ -162,6 +174,8 @@ export class RadarState {
 
   /** Durable Object alarm: the ~20 s loop. */
   async alarm(): Promise<void> {
+    // Only the live instance keeps looping; a retired one simply stops (no duplicate alerts).
+    if ((await this.state.storage.get<string>("active")) !== ACTIVE) return;
     await this.run(() => this.scan());
   }
 
@@ -171,8 +185,19 @@ export class RadarState {
     const env = this.env;
     const minStrength = Number(env.DISCORD_MIN_STRENGTH);
     const role = env.DISCORD_ROLE_ID?.trim();
-    const cfg = IntelConfigSchema.parse({ discord: { ...(Number.isFinite(minStrength) && env.DISCORD_MIN_STRENGTH ? { minStrength } : {}), ...(role && /^\d+$/.test(role) ? { mentionRoleId: role } : {}) } });
-    const meta = (await st.get<{ warm?: boolean; welcomed?: string[]; lastFullRunAt?: number; relay?: { received: number; lastAt: number | null }; sentLog?: number[] }>("meta")) ?? {};
+    // Everything the engine detects is sent, one notification per signal (DISCORD_MIN_STRENGTH can raise the bar).
+    const cfg = IntelConfigSchema.parse({
+      discord: {
+        minStrength: Number.isFinite(minStrength) && env.DISCORD_MIN_STRENGTH ? minStrength : 0,
+        directions: ["bullish", "bearish", "neutral"],
+        perCoinCooldownMin: 0,
+        digestMin: 0,
+        maxMessagesPerHour: 5000,
+        onePerMessage: true,
+        ...(role && /^\d+$/.test(role) ? { mentionRoleId: role } : {}),
+      },
+    });
+    const meta = (await st.get<{ warm?: boolean; welcomed?: string[]; lastFullRunAt?: number; relay?: { received: number; lastAt: number | null }; sentLog?: number[]; seen?: Record<string, number> }>("meta")) ?? {};
 
     // Channel routing: one webhook per direction when configured, the general webhook for the rest.
     const bull = env.DISCORD_WEBHOOK_BULLISH?.trim() || null;
@@ -200,6 +225,10 @@ export class RadarState {
       cfg,
       channels,
       history: new CoinbasePriceHistory((await st.get("cb")) ?? null),
+      binance: new BinanceRestHistory(cfg.binance.quotes, (await st.get("bn")) ?? null),
+      binanceBackoffUntil: 0,
+      coinbaseBackoffUntil: 0,
+      seen: new Map(Object.entries(meta.seen ?? {})),
       warm: !!meta.warm,
       welcomed: new Set(meta.welcomed ?? []),
       lastFullRunAt: meta.lastFullRunAt ?? null,
@@ -214,13 +243,11 @@ export class RadarState {
       notifier: {
         consider: (s) => {
           if (!loaded.warm) return;
-          this.signalsThisRun++;
-          loaded.sentLog.push(this.clock);
-          for (const c of channels) c.n.consider(s);
+          this.dispatch(s);
         },
         view: () => channels[0]?.n.view() ?? null,
       },
-      enabledSources: ["coinbase", "coingecko", "trending", "derivatives", "dex", "news"],
+      enabledSources: ["binance", "coinbase", "coingecko", "trending", "derivatives", "dex", "news"],
       now: () => this.clock,
     });
     loaded.svc.restore(await st.get<IntelSavedState>("intel"));
@@ -229,6 +256,22 @@ export class RadarState {
   }
 
   private errors: string[] = [];
+
+  /**
+   * Send one signal to its channel(s). The same event (coin × type) seen by
+   * both the site and the bot within 30 min is sent once.
+   */
+  private dispatch(s: IntelSignal) {
+    const L = this.loaded;
+    if (!L) return;
+    const key = `${s.coin}:${s.kind}:${s.direction}`;
+    const last = L.seen.get(key);
+    if (last !== undefined && this.clock - last < 30 * 60_000) return;
+    L.seen.set(key, this.clock);
+    this.signalsThisRun++;
+    L.sentLog.push(this.clock);
+    for (const c of L.channels) c.n.consider(s);
+  }
 
   private async get(label: string, url: string): Promise<string | null> {
     try {
@@ -273,21 +316,34 @@ export class RadarState {
           if (rows.length) svc.onMarkets(rows, page, now);
         }
         sources.coingecko = `${n} cryptos`;
-      } else this.errors.push("SITE_URL non configurée : CoinGecko et actualités ignorés (seul Coinbase est analysé)");
+      } else this.errors.push("SITE_URL non configurée : CoinGecko et actualités ignorés (seuls Binance et Coinbase sont analysés)");
     }
 
-    // 2. (every run) Coinbase: every listed crypto, 5 / 15 min moves.
-    const products: Product[] = [];
-    for (let page = 0; page < 4; page++) {
-      const text = await this.get("Coinbase", `https://api.coinbase.com/api/v3/brokerage/market/products?product_type=SPOT&limit=250&offset=${page * 250}`);
-      if (!text) break;
-      const parsed = parseProductsPage(JSON.parse(text));
-      products.push(...parsed.products);
-      if (parsed.rawCount < 250) break;
-    }
-    if (products.length) {
-      svc.onCoinbaseProducts(products, L.history, now);
-      sources.coinbase = `${CoinbasePriceHistory.pick(products).length} cryptos`;
+    // 2. (every run) Binance: every pair, 5 / 15 min moves and 24 h breakouts (weight 80 / call).
+    if (now >= L.binanceBackoffUntil) {
+      const text = await this.get("Binance", "https://data-api.binance.vision/api/v3/ticker/24hr?type=MINI&symbolStatus=TRADING");
+      if (text) {
+        const tickers = arr<BinanceMiniRestTicker>(text, BinanceMiniRestTickerSchema);
+        if (tickers.length) {
+          svc.onBinanceTickers(tickers, L.binance, now);
+          sources.binance = `${L.binance.pick(tickers, now).length} cryptos`;
+        }
+      } else if (this.errors.some((e) => /^Binance : HTTP (451|403)/.test(e))) {
+        // Binance refuses this server's location: try again in 30 min, Coinbase covers meanwhile.
+        L.binanceBackoffUntil = now + 30 * 60_000;
+      } else L.binanceBackoffUntil = now + 60_000;
+    } else sources.binance = `en pause jusqu'à ${new Date(L.binanceBackoffUntil).toISOString().slice(11, 16)} UTC (refus précédent)`;
+
+    // 3. (every run) Coinbase: every listed crypto (one call), for coins Binance does not have.
+    if (now >= L.coinbaseBackoffUntil) {
+      const text = await this.get("Coinbase", "https://api.coinbase.com/api/v3/brokerage/market/products?product_type=SPOT");
+      if (text) {
+        const products: Product[] = parseProductsPage(JSON.parse(text)).products;
+        if (products.length) {
+          svc.onCoinbaseProducts(products, L.history, now);
+          sources.coinbase = `${CoinbasePriceHistory.pick(products).length} cryptos`;
+        }
+      } else L.coinbaseBackoffUntil = now + (this.errors.some((e) => e.startsWith("Coinbase : HTTP 429")) ? 90_000 : 40_000);
     }
 
     if (full && site) {
@@ -300,7 +356,9 @@ export class RadarState {
           sources.trending = `${t.data.coins.length}`;
         }
       }
-      const der = arr<CgDerivative>(await this.get("Dérivés", `${site}/api/cg/derivatives`), CgDerivativeSchema);
+      const derText = await this.get("Dérivés", `${site}/api/cg/derivatives/exchanges/binance_futures`);
+      const derDoc = derText ? CgDerivativeExchangeSchema.safeParse(JSON.parse(derText)) : null;
+      const der = derDoc?.success ? derivativeRowsFromExchange(derDoc.data) : [];
       if (der.length) {
         svc.onDerivatives(der, now);
         sources.derivatives = `${der.length} contrats`;
@@ -347,8 +405,7 @@ export class RadarState {
       if (!s) continue;
       accepted++;
       if (!L.warm) continue;
-      L.sentLog.push(this.clock);
-      for (const c of L.channels) c.n.consider(s);
+      this.dispatch(s);
     }
     L.relay.received += accepted;
     if (accepted) L.relay.lastAt = this.clock;
@@ -388,7 +445,8 @@ export class RadarState {
   }
 
   private meta(L: NonNullable<RadarState["loaded"]>) {
-    return { warm: L.warm, welcomed: [...L.welcomed], lastFullRunAt: L.lastFullRunAt, relay: L.relay, sentLog: L.sentLog.filter((t) => t > this.clock - 86_400_000).slice(-5000) };
+    const seen = Object.fromEntries([...L.seen].filter(([, t]) => t > this.clock - 30 * 60_000));
+    return { warm: L.warm, welcomed: [...L.welcomed], lastFullRunAt: L.lastFullRunAt, relay: L.relay, sentLog: L.sentLog.filter((t) => t > this.clock - 86_400_000).slice(-20000), seen };
   }
 
   private discordView(L: NonNullable<RadarState["loaded"]>) {
@@ -403,7 +461,7 @@ export class RadarState {
       lastRunAt: this.clock,
       lastFullRunAt: L.lastFullRunAt,
       durationMs: Date.now() - t0,
-      loop: `prix Coinbase toutes les ${FAST_MS / 1000} s, autres sources toutes les ${FULL_MS / 60_000} min`,
+      loop: `prix Binance et Coinbase toutes les ${FAST_MS / 1000} s, autres sources toutes les ${FULL_MS / 60_000} min, une notification Discord par signal`,
       signals24h: L.sentLog.filter((t) => t > this.clock - 86_400_000).length,
       // Keep the detail of the last full pass visible between fast runs.
       sources: full ? sources : { ...(prev?.sources ?? {}), ...sources },
@@ -412,7 +470,7 @@ export class RadarState {
       config: { siteUrl: (this.env.SITE_URL ?? "").trim() || null, webhookConfigured: L.channels.some((c) => c.n.active), minStrength: L.cfg.discord.minStrength },
       discord: this.discordView(L),
     };
-    const entries: Record<string, unknown> = { cb: L.history.export(), discord: Object.fromEntries(L.channels.map((c) => [c.id, c.n.exportState()])), meta: this.meta(L), status };
+    const entries: Record<string, unknown> = { cb: L.history.export(), bn: L.binance.export(), discord: Object.fromEntries(L.channels.map((c) => [c.id, c.n.exportState()])), meta: this.meta(L), status };
     if (full) {
       // Compact: the worker needs cooldowns and recent signals, not full history.
       const intel = L.svc.exportState();
@@ -452,7 +510,12 @@ export class RadarState {
   }
 }
 
-const stub = (env: Env) => env.RADAR.get(env.RADAR.idFromName("main"));
+/**
+ * The Durable Object lives in Western Europe (location hint): its requests to
+ * Binance, Coinbase and the site leave from a European data centre (Binance
+ * refuses US locations, and the site's CoinGecko cache is shared per region).
+ */
+const stub = (env: Env) => env.RADAR.get(env.RADAR.idFromName(ACTIVE), { locationHint: "weur" });
 
 export default {
   async scheduled(_event: unknown, env: Env, ctx: { waitUntil(p: Promise<unknown>): void }) {

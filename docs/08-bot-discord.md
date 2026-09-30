@@ -9,25 +9,29 @@ quand ton ordinateur et ton téléphone sont éteints :
 
 ## Ce qu'il surveille
 
-- **Coinbase** : toutes les cryptos cotées en USD/USDC, avec les hausses et chutes sur 5 et 15 minutes.
-- **CoinGecko** (750 plus grosses capitalisations) : top hausses/krachs sur 1 h, volumes anormaux, proximité du record,
-  tendances, funding et open interest, nouveaux jetons et pumps DEX, risques de rug.
-- **Actualités** : les 8 médias du site.
-- **Confluences** entre ces types d'indices (prix + actualités, prix + dérivés…).
-
-CoinGecko et les actualités sont lus **via ton site** (`SITE_URL`) : le worker profite du même cache et ne consomme pas
-de quota CoinGecko en plus.
-
-Binance n'est pas utilisé ici, car Binance refuse les serveurs Cloudflare. Coinbase et CoinGecko le remplacent.
+- **Binance** (toutes les 20 s) : toutes les paires, hausses et chutes sur 5 et 15 min, cassures des plus hauts et plus
+  bas sur 24 h. Le bot tourne dans un centre de données **en Europe**, parce que Binance refuse les serveurs situés
+  aux États-Unis. Si Binance refuse quand même, la page d'état l'indique et le bot réessaie toutes les 30 min.
+- **Coinbase** (toutes les 20 s) : les cryptos que Binance n'a pas.
+- **CoinGecko** (750 plus grosses capitalisations), toutes les 5 min, via le cache du site : top hausses et krachs sur
+  1 h, volumes anormaux, record proche, tendances, funding et open interest (Binance Futures), DEX.
+- **Actualités** : 7 médias (CryptoSlate a été retiré, car il refuse les serveurs Cloudflare).
+- **Relais du site** : tout ce que le site détecte quand il est ouvert.
 
 ## Quelles alertes arrivent ?
 
-- **Alerte immédiate :** signaux de force **≥ 70** et toutes les **confluences**. Pas plus d'une alerte par heure pour une
-  même crypto dans le même sens.
-- **Résumé toutes les 15 min :** les signaux un peu plus faibles (≥ 55).
-- **Au maximum 30 messages par heure.** Jamais de `@everyone`.
-- **Au tout premier passage,** le worker envoie seulement « ✅ Crypto Radar connecté ». Il apprend l'état du marché sans
-  alerter sur tout ce qui bouge déjà.
+- **Tous les signaux, sans seuil, une notification par signal.** Tout ce qui apparaît sur le site part sur Discord.
+- **Anti-doublon uniquement :** un même événement (même crypto, même type de signal, même sens) vu à la fois par le site
+  et par le bot n'est envoyé qu'une fois en 30 min.
+- **Délai :** en temps normal, une alerte part en quelques secondes (relais du site) ou en moins de 20 s (bot).
+  Discord limite chaque salon à environ 30 messages par minute. Si le marché s'emballe et qu'une file se forme, le bot
+  regroupe temporairement jusqu'à 5 signaux par message pour ne pas prendre de retard.
+- **Salons :**
+  - les signaux **neutres** (par exemple un volume anormal sans direction) vont dans le salon de `DISCORD_WEBHOOK_URL` ;
+  - si tu n'as mis que les salons haussier et baissier, les signaux neutres ne sont pas envoyés.
+- `DISCORD_MIN_STRENGTH` permet de remettre un seuil si c'est trop bavard. Si tu l'avais mise, supprime-la pour tout
+  recevoir.
+- Jamais de `@everyone`.
 
 ## Mise en place (≈ 10 minutes)
 

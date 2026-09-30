@@ -5,6 +5,7 @@
  * server and the in-browser demo feed it through the same `on*` methods.
  */
 import {
+  BinanceRestHistory,
   CoinMatcher,
   CoinbasePriceHistory,
   IntelEngine,
@@ -29,6 +30,7 @@ import {
   type KindStats,
   type LiveTracker,
   type NewsItem,
+  type BinanceMiniRestTicker,
   type Opportunity,
   type Product,
   type RawFeedItem,
@@ -182,6 +184,18 @@ export class IntelService {
       h.items = tracker.coins().length;
       h.lastSuccessAt = now;
     }
+    this.emit(this.engine.ingest(cands, now), []);
+  }
+
+  /** Binance all-market REST snapshot (scheduled worker without WebSocket). */
+  onBinanceTickers(tickers: BinanceMiniRestTicker[], history: BinanceRestHistory, now = this.now()) {
+    const snaps = history.update(tickers, now);
+    const cands: Candidate[] = [];
+    for (const s of snaps) {
+      this.engine.upsertLive(s, now, "binance");
+      cands.push(...detectLive(s, this.cfg.binance, "binance"));
+    }
+    this.setSourceState("binance", "ok", `${snaps.length} cryptos (Binance, relevé toutes les 20 s)`, now, snaps.length);
     this.emit(this.engine.ingest(cands, now), []);
   }
 

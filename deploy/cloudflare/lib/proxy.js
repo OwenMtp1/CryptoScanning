@@ -12,7 +12,7 @@ export const FEEDS = [
   { id: "decrypt", name: "Decrypt", url: "https://decrypt.co/feed", lang: "en" },
   { id: "theblock", name: "The Block", url: "https://www.theblock.co/rss.xml", lang: "en" },
   { id: "bitcoinmagazine", name: "Bitcoin Magazine", url: "https://bitcoinmagazine.com/.rss/full/", lang: "en" },
-  { id: "cryptoslate", name: "CryptoSlate", url: "https://cryptoslate.com/feed/", lang: "en" },
+  // CryptoSlate removed: it refuses requests coming from Cloudflare servers (HTTP 403).
   { id: "cryptoast", name: "Cryptoast", url: "https://cryptoast.fr/feed/", lang: "fr" },
   { id: "journalducoin", name: "Journal du Coin", url: "https://journalducoin.com/feed/", lang: "fr" },
 ];
@@ -36,7 +36,9 @@ export async function cachedFetch(ctx, key, upstreamUrl, init, ttl, contentType)
     const ok = up.status === 200;
     const headers = { "content-type": contentType ?? up.headers.get("content-type") ?? "application/octet-stream", "cache-control": `public, max-age=${ok ? ttl : 120}`, "x-upstream-status": String(up.status) };
     if (!ok) headers["retry-after"] = "120";
-    res = new Response(ok ? up.body : JSON.stringify({ error: "upstream_error", status: up.status }), { status: ok ? 200 : up.status === 429 ? 429 : 502, headers });
+    // On error, keep a short excerpt of the upstream answer: it says why (missing key, rate limit…).
+    const detail = ok ? null : (await up.text().catch(() => "")).replace(/\s+/g, " ").slice(0, 200);
+    res = new Response(ok ? up.body : JSON.stringify({ error: "upstream_error", status: up.status, detail }), { status: ok ? 200 : up.status === 429 ? 429 : 502, headers });
   } catch (err) {
     res = new Response(JSON.stringify({ error: "upstream_unreachable" }), { status: 502, headers: { "content-type": "application/json", "cache-control": "public, max-age=60", "retry-after": "60" } });
   }

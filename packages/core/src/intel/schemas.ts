@@ -119,6 +119,59 @@ export const CgDerivativeSchema = z.object({
 });
 export type CgDerivative = z.infer<typeof CgDerivativeSchema>;
 
+/**
+ * `GET /derivatives/exchanges/{id}?include_tickers=unexpired` — one exchange
+ * (e.g. binance_futures). Much lighter than `/derivatives` (all exchanges,
+ * several MB), with the same funding / open interest information.
+ */
+export const CgDerivativeExchangeSchema = z.object({
+  name: z.string(),
+  tickers: z
+    .array(
+      z.object({
+        symbol: z.string(),
+        base: z.string().nullable().optional(),
+        contract_type: z.string().nullable().optional(),
+        last: optNum,
+        h24_percentage_change: optNum,
+        funding_rate: optNum,
+        open_interest_usd: optNum,
+        h24_volume: optNum,
+        expired_at: z.union([z.string(), z.number()]).nullable().optional(),
+      }),
+    )
+    .default([]),
+});
+
+/** Convert one exchange's tickers to the `/derivatives` row shape used by the detectors. */
+export function derivativeRowsFromExchange(doc: z.infer<typeof CgDerivativeExchangeSchema>): CgDerivative[] {
+  return doc.tickers
+    .filter((t) => t.base)
+    .map((t) => ({
+      market: doc.name,
+      symbol: t.symbol,
+      index_id: (t.base as string).toUpperCase(),
+      price: t.last,
+      price_percentage_change_24h: t.h24_percentage_change,
+      contract_type: t.contract_type ?? null,
+      funding_rate: t.funding_rate,
+      open_interest: t.open_interest_usd,
+      volume_24h: t.h24_volume,
+    }));
+}
+
+/** Item of Binance `GET /api/v3/ticker/24hr?type=MINI` (all symbols). */
+export const BinanceMiniRestTickerSchema = z.object({
+  symbol: z.string(),
+  openPrice: num,
+  highPrice: num,
+  lowPrice: num,
+  lastPrice: num,
+  quoteVolume: num,
+  closeTime: z.number(),
+});
+export type BinanceMiniRestTicker = z.infer<typeof BinanceMiniRestTickerSchema>;
+
 const windows = ["m5", "m15", "m30", "h1", "h6", "h24"] as const;
 const byWindow = <T extends z.ZodTypeAny>(t: T) => z.object(Object.fromEntries(windows.map((w) => [w, t.optional()])) as Record<(typeof windows)[number], z.ZodOptional<T>>).partial().default({});
 

@@ -11,7 +11,7 @@
  * `x-cg-pro-api-key` (paid plans, pro-api.coingecko.com). Keyless use of the
  * public API is possible but more strictly rate-limited.
  */
-import { CgDerivativeSchema, CgMarketRowSchema, CgTrendingSchema, GtPoolsSchema, type CgDerivative, type CgMarketRow, type GtPools, type IntelConfig, type TrendingCoin } from "@radar/core";
+import { CgDerivativeExchangeSchema, CgMarketRowSchema, derivativeRowsFromExchange, CgTrendingSchema, GtPoolsSchema, type CgDerivative, type CgMarketRow, type GtPools, type IntelConfig, type TrendingCoin } from "@radar/core";
 import type { CallBudget } from "./budget.js";
 import type { FetchText } from "./http.js";
 
@@ -111,16 +111,11 @@ export class CoinGeckoFeed {
     });
     tasks.push({
       id: "derivatives",
-      path: "/derivatives",
+      // One exchange (Binance Futures, the largest): /derivatives (all exchanges) is several MB.
+      path: "/derivatives/exchanges/binance_futures?include_tickers=unexpired",
       baseIntervalMin: 20,
       run: (text, now) => {
-        const raw = JSON.parse(text) as unknown;
-        if (!Array.isArray(raw)) throw new Error("réponse /derivatives inattendue");
-        const rows: CgDerivative[] = [];
-        for (const r of raw) {
-          const x = CgDerivativeSchema.safeParse(r);
-          if (x.success) rows.push(x.data);
-        }
+        const rows: CgDerivative[] = derivativeRowsFromExchange(CgDerivativeExchangeSchema.parse(JSON.parse(text)));
         h.onDerivatives(rows, now);
         return rows.length;
       },
@@ -133,7 +128,7 @@ export class CoinGeckoFeed {
         tasks.push({
           id,
           path,
-          baseIntervalMin: 10,
+          baseIntervalMin: 20,
           run: (text, now) => {
             const doc = GtPoolsSchema.parse(JSON.parse(text));
             h.onPools(doc, isNew, now);
@@ -209,7 +204,14 @@ export class CoinGeckoFeed {
       if (res.status === 401 || res.status === 403)
         throw new Error(this.o.apiKey ? `clé CoinGecko refusée (HTTP ${res.status}) — vérifier COINGECKO_API_KEY / COINGECKO_PLAN` : `accès refusé (HTTP ${res.status}) — une clé Demo gratuite (COINGECKO_API_KEY) est recommandée`);
       const up = res.headers.get("x-upstream-status");
-      if (res.status !== 200) throw new Error(`HTTP ${res.status}${up ? ` (CoinGecko a répondu ${up}${up === "429" ? " : trop d'appels, ajoute une clé Demo" : up === "401" || up === "403" ? " : accès refusé, clé manquante ou invalide" : ""})` : ""}`);
+      let detail = "";
+      try {
+        const d = (JSON.parse(res.text) as { detail?: string }).detail;
+        if (d) detail = ` — ${d.slice(0, 160)}`;
+      } catch {
+        // not JSON
+      }
+      if (res.status !== 200) throw new Error(`HTTP ${res.status}${up ? ` (CoinGecko a répondu ${up}${up === "429" ? " : trop d'appels, ajoute une clé Demo" : up === "401" || up === "403" ? " : accès refusé, clé manquante ou invalide" : ""})` : ""}${detail}`);
       const n = t.run(res.text, now);
       this.o.handlers.onSuccess(t.id, n, now);
     } catch (err) {

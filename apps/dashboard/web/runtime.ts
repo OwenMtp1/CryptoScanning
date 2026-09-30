@@ -9,7 +9,7 @@
  *   read cross-origin from a browser).
  * No Discord here: alerts need a process that runs 24/7.
  */
-import { CoinbasePriceHistory, IntelConfigSchema, parseFeed, parseProductsPage, type LogEvent, type Product } from "@radar/core";
+import { CoinbasePriceHistory, IntelConfigSchema, parseFeed, parseProductsPage, type LogEvent } from "@radar/core";
 import { handleAction, handleGet, type RouteContext } from "../../server/src/api/routes";
 import { BinanceFeed } from "../../server/src/intel/binance-feed";
 import { CallBudget } from "../../server/src/intel/budget";
@@ -118,16 +118,18 @@ export async function startWeb(): Promise<DemoBackend> {
   // Coinbase: public product list (prices) every minute through the cached function.
   const cbHistory = new CoinbasePriceHistory();
   const pollCoinbase = async () => {
+    const direct = "https://api.coinbase.com/api/v3/brokerage/market/products?product_type=SPOT";
     try {
-      const all: Product[] = [];
-      for (let page = 0; page < 4; page++) {
-        const r = await fetchText(`/api/coinbase/products?page=${page}`, { timeoutMs: 20_000 });
-        if (r.status !== 200) throw new Error(`HTTP ${r.status}${r.headers.get("x-upstream-status") ? ` (Coinbase a répondu ${r.headers.get("x-upstream-status")})` : ""}`);
-        const parsed = parseProductsPage(JSON.parse(r.text));
-        all.push(...parsed.products);
-        if (parsed.rawCount < 250) break;
+      let r;
+      try {
+        // Straight from the browser first: the visitor's own IP, no rate limit shared with other Cloudflare users.
+        r = await fetchText(direct, { timeoutMs: 20_000 });
+        if (r.status !== 200) throw new Error(`HTTP ${r.status}`);
+      } catch {
+        r = await fetchText("/api/coinbase/products", { timeoutMs: 20_000 });
       }
-      svc.onCoinbaseProducts(all, cbHistory);
+      if (r.status !== 200) throw new Error(`HTTP ${r.status}${r.headers.get("x-upstream-status") ? ` (Coinbase a répondu ${r.headers.get("x-upstream-status")})` : ""}`);
+      svc.onCoinbaseProducts(parseProductsPage(JSON.parse(r.text)).products, cbHistory);
     } catch (err) {
       svc.setSourceState("coinbase", "down", `liste Coinbase indisponible : ${(err as Error).message}`);
     }
@@ -143,10 +145,10 @@ export async function startWeb(): Promise<DemoBackend> {
   };
   const relay = { sent: 0, lastOkAt: null as number | null, lastError: null as string | null };
   let relayQueue: unknown[] = [];
-  const minRelay = cfg.discord.minStrength - 15; // same floor as the bot's digest
+  // Every signal shown on the site is relayed (no strength threshold).
   svc.subscribe((b) => {
     if (!readKey()) return;
-    for (const s of b.signals) if (s.direction !== "neutral" && s.strength >= minRelay && s.source !== "dex") relayQueue.push({ id: s.id, ts: s.ts, coin: s.coin, coinName: s.coinName, kind: s.kind, direction: s.direction, source: s.source, strength: s.strength, title: s.title, reasons: s.reasons.slice(0, 8), priceUsd: s.priceUsd, url: s.url });
+    for (const s of b.signals) relayQueue.push({ id: s.id, ts: s.ts, coin: s.coin, coinName: s.coinName, kind: s.kind, direction: s.direction, source: s.source, strength: s.strength, title: s.title, reasons: s.reasons.slice(0, 8), priceUsd: s.priceUsd, url: s.url });
   });
   const postRelay = async (signals: unknown[], key = readKey()) => {
     const r = await fetchText("/api/discord/relay", { method: "POST", headers: { "content-type": "application/json", "x-relay-key": key }, body: JSON.stringify({ signals }), timeoutMs: 15_000 });
@@ -163,7 +165,7 @@ export async function startWeb(): Promise<DemoBackend> {
   setInterval(() => {
     if (!relayQueue.length) return;
     const batch = relayQueue.splice(0, 50);
-    if (relayQueue.length > 200) relayQueue = relayQueue.slice(-200);
+    if (relayQueue.length > 1000) relayQueue = relayQueue.slice(-1000);
     postRelay(batch).then(
       (b) => {
         relay.sent += b.accepted ?? 0;
@@ -172,7 +174,7 @@ export async function startWeb(): Promise<DemoBackend> {
       },
       (e: Error) => (relay.lastError = e.message),
     );
-  }, 3000);
+  }, 2000);
   let botStatus: unknown = null;
   const pollBot = () =>
     fetchText("/api/discord/status", { timeoutMs: 15_000 }).then(

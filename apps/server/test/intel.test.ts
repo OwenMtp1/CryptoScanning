@@ -77,8 +77,8 @@ describe("CoinGeckoFeed", () => {
     const fetchText = vi.fn(async () => resp(200, JSON.stringify({ coins: [] })));
     const budget = new CallBudget(10_000, 30, null, T0);
     const feed = new CoinGeckoFeed({ plan: "public", apiKey: null, cfg, budget, fetchText, handlers: handlers(), now: () => now });
-    // 4 market pages + trending + dex×2 at 10 min, derivatives at 20 min = 45 calls/h vs ≈ 18.29 allowed
-    expect(feed.stretch()).toBeCloseTo(45 / (9000 / 492), 6);
+    // 4 market pages + trending at 10 min, derivatives + dex×2 at 20 min = 39 calls/h vs ≈ 18.29 allowed
+    expect(feed.stretch()).toBeCloseTo(39 / (9000 / 492), 6);
     const seen = new Set<string>();
     for (let i = 0; i < 8; i++) {
       const id = await feed.tick();

@@ -99,6 +99,8 @@ export const IntelConfigSchema = z.object({
       mentionRoleId: z.string().regex(/^\d+$/).nullable().default(null),
       mentionMinStrength: z.number().min(0).max(100).default(90),
       includeNews: z.boolean().default(true),
+      /** One Discord message per signal (instead of up to 10 signals grouped in one message). */
+      onePerMessage: z.boolean().default(false),
     })
     .prefault({}),
 });

@@ -19,6 +19,7 @@ function fakeFetch(url: string, init?: { method?: string; body?: string }) {
     posted.push({ body: init?.body ?? "" });
     return res("{}");
   }
+  if (url.startsWith("https://data-api.binance.vision/")) return res(JSON.stringify([{ symbol: "WIFUSDT", openPrice: "1", highPrice: "2", lowPrice: "0.5", lastPrice: String(price), volume: "1", quoteVolume: "90000000", openTime: 0, closeTime: Date.now() }]));
   if (url.startsWith("https://api.coinbase.com/")) return res(JSON.stringify({ products: [product("PEPE-USD", price), product("BTC-USD", 100_000), product("BTC-EUR", 90_000)] }));
   if (url.startsWith(`${SITE}/api/cg/coins/markets`)) return res(url.includes("page=1") ? JSON.stringify([{ id: "pepe", symbol: "pepe", name: "Pepe", current_price: price, market_cap: 5e9, market_cap_rank: 30, total_volume: 1e8, price_change_percentage_1h_in_currency: 0.5, price_change_percentage_24h_in_currency: 1 }]) : "[]");
   if (url.startsWith(`${SITE}/api/cg/search/trending`)) return res(JSON.stringify({ coins: [] }));
@@ -52,17 +53,21 @@ describe("Discord worker", () => {
     price = 1.08;
     const s2 = await run();
     expect(s2.errors).toEqual([]);
-    expect(posted.length).toBe(2);
-    const msg = JSON.parse(posted[1]!.body);
-    const titles = msg.embeds.map((e: { title: string }) => e.title).join(" | ");
-    expect(titles).toContain("PEPE : 2 types d'indices indépendants haussiers (prix + actualités)"); // the pump alone (67) waits for the digest
-    expect(msg.allowed_mentions).toEqual({ parse: [] });
+    // No threshold, one notification per signal: Binance pump (WIF), Coinbase pump (PEPE), news, confluence…
+    const msgs = posted.slice(1).map((p) => JSON.parse(p.body));
+    expect(msgs.every((m) => m.embeds.length === 1)).toBe(true);
+    const titles = msgs.map((m) => m.embeds[0].title).join(" | ");
+    expect(titles).toContain("WIF décolle");
+    expect(titles).toContain("PEPE décolle");
+    expect(titles).toContain("PEPE : 2 types d'indices indépendants haussiers");
+    expect(msgs[0].allowed_mentions).toEqual({ parse: [] });
+    const afterSecond = posted.length;
 
-    // Same move again 5 min later: per-coin cooldown → no new immediate alert.
+    // Same move again 5 min later: the same event (coin × type) is not re-sent.
     vi.setSystemTime(Date.now() + 5 * 60_000);
     price = 1.17;
     await run();
-    expect(posted.length).toBe(2);
+    expect(posted.length).toBe(afterSecond);
 
     // Public status never contains the webhook token.
     const status = await (await new RadarState({ storage: st } as never, env).fetch(new Request("https://radar/status"))).text();
@@ -87,7 +92,8 @@ describe("Discord worker", () => {
     vi.setSystemTime(Date.now() + 5 * 60_000);
     price = 1.1;
     await run();
-    expect(byHook["1"]!.length).toBe(2); // bullish confluence → bullish channel
+    expect(byHook["1"]!.length).toBeGreaterThan(2); // every bullish signal, one message each
+    expect(byHook["1"]!.slice(1).every((b) => JSON.parse(b).embeds.length === 1)).toBe(true);
     expect(byHook["2"]!.length).toBe(1); // nothing bearish
   });
 
@@ -111,6 +117,17 @@ describe("Discord worker", () => {
     await relay("s3cret-code", [{ ...sig, id: "b2" }]); // same coin/direction within 1 h → not re-alerted
     expect(posted).toHaveLength(2);
     expect(await (await obj.fetch(new Request("https://radar/status"))).text()).not.toContain("s3cret");
+  });
+
+  it("a retired instance (before the move to Europe) stops its loop instead of sending duplicates", async () => {
+    const f = vi.fn(async (u: string, i?: { method?: string; body?: string }) => fakeFetch(u, i));
+    vi.stubGlobal("fetch", f);
+    const st = storage();
+    await new RadarState({ storage: st } as never, { RADAR: {} as never, DISCORD_WEBHOOK_URL: WEBHOOK }).alarm();
+    expect(f).not.toHaveBeenCalled();
+    st.m.set("active", "eu-1");
+    await new RadarState({ storage: st } as never, { RADAR: {} as never, DISCORD_WEBHOOK_URL: WEBHOOK }).alarm();
+    expect(f).toHaveBeenCalled();
   });
 
   it("runs on Coinbase alone when SITE_URL is missing and says so", async () => {

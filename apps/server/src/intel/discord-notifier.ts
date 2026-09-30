@@ -118,15 +118,28 @@ export class DiscordNotifier {
     if (!this.urgent.length) return;
     const list = this.urgent.sort((a, b) => b.strength - a.strength);
     this.urgent = [];
-    if (this.sentLastHour(now) + this.queue.length >= this.o.cfg.maxMessagesPerHour) {
-      // Over the hourly cap: fold into the digest instead of spamming.
-      this.digest.push(...list);
+    const c = this.o.cfg;
+    const mentionFor = (group: IntelSignal[]) => (c.mentionRoleId && group.some((s) => s.strength >= c.mentionMinStrength) ? c.mentionRoleId : null);
+    if (c.onePerMessage) {
+      // One notification per signal; only when a big backlog builds up (market going wild, Discord
+      // limits ~30 messages/min per channel) are up to 5 signals grouped so alerts stay within a minute.
+      const per = this.queue.length + list.length > 25 ? 5 : 1;
+      for (let i = 0; i < list.length; i += per) {
+        const group = list.slice(i, i + per);
+        const mention = mentionFor(group);
+        this.queue.push(...packMessages(group.map((s) => signalEmbed(s, this.o.hitRateOf(s))), { mentionRole: mention, content: mention ? "Signal fort" : undefined }));
+      }
+      if (this.queue.length > 500) this.queue.splice(0, this.queue.length - 500);
       return;
     }
-    const c = this.o.cfg;
-    const mention = c.mentionRoleId && list.some((s) => s.strength >= c.mentionMinStrength) ? c.mentionRoleId : null;
+    if (this.sentLastHour(now) + this.queue.length >= c.maxMessagesPerHour) {
+      // Over the hourly cap: fold into the digest instead of spamming.
+      if (c.digestMin > 0) this.digest.push(...list);
+      return;
+    }
+    const mention = mentionFor(list);
     const embeds = list.slice(0, 10).map((s) => signalEmbed(s, this.o.hitRateOf(s)));
-    if (list.length > 10) this.digest.push(...list.slice(10));
+    if (list.length > 10 && c.digestMin > 0) this.digest.push(...list.slice(10));
     this.queue.push(...packMessages(embeds, { mentionRole: mention, content: mention ? "Signal fort" : undefined }));
   }
 
@@ -224,7 +237,7 @@ export class DiscordNotifier {
   /** Persistable state (for a scheduled worker that restarts between runs). */
   exportState() {
     const dayAgo = this.now() - 86_400_000;
-    return { lastCoinAt: Object.fromEntries([...this.lastCoinAt].filter(([, t]) => t > dayAgo)), sentAt: [...this.sentAt], lastSentAt: this.lastSentAt, lastDigestAt: this.lastDigestAt, digest: this.digest.slice(-200), queue: this.queue.slice(0, 20), lastError: this.lastError, pausedUntil: this.pausedUntil };
+    return { lastCoinAt: Object.fromEntries([...this.lastCoinAt].filter(([, t]) => t > dayAgo)), sentAt: [...this.sentAt], lastSentAt: this.lastSentAt, lastDigestAt: this.lastDigestAt, digest: this.digest.slice(-200), queue: this.queue.slice(0, 300), lastError: this.lastError, pausedUntil: this.pausedUntil };
   }
 
   importState(s: Partial<ReturnType<DiscordNotifier["exportState"]>> | null | undefined) {

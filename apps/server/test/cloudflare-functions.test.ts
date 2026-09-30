@@ -57,19 +57,21 @@ describe("Cloudflare function /api/cg", () => {
   });
   it("uses the pro host for paid plans and caches upstream errors briefly", async () => {
     upstreamStatus = 429;
-    const r = await call(cg, "https://x/api/cg/derivatives", { path: ["derivatives"] }, { COINGECKO_API_KEY: "k", COINGECKO_PLAN: "pro" });
-    expect(upstream[0]!.url).toBe("https://pro-api.coingecko.com/api/v3/derivatives");
+    const r = await call(cg, "https://x/api/cg/derivatives/exchanges/binance_futures", { path: ["derivatives", "exchanges", "binance_futures"] }, { COINGECKO_API_KEY: "k", COINGECKO_PLAN: "pro" });
+    expect(upstream[0]!.url).toBe("https://pro-api.coingecko.com/api/v3/derivatives/exchanges/binance_futures?include_tickers=unexpired");
     expect(upstream[0]!.headers["x-cg-pro-api-key"]).toBe("k");
     expect(r.status).toBe(429);
     expect(r.headers.get("retry-after")).toBe("120");
     expect(r.headers.get("cache-control")).toBe("public, max-age=120");
+    expect(((await r.json()) as { detail: string }).detail).toBe("nope"); // upstream reason kept for diagnosis
+    expect((await call(cg, "https://x/api/cg/derivatives", { path: ["derivatives"] })).status).toBe(404); // too big, no longer relayed
   });
 });
 
 describe("Cloudflare function /api/news", () => {
   it("lists feeds and proxies only whitelisted ones", async () => {
     const list = (await (await newsList()).json()) as { feeds: { id: string }[] };
-    expect(list.feeds.length).toBe(8);
+    expect(list.feeds.length).toBe(7); // CryptoSlate refuses Cloudflare
     const r = await call(newsFeed, "https://x/api/news/decrypt", { id: "decrypt" });
     expect(r.status).toBe(200);
     expect(upstream[0]!.url).toBe("https://decrypt.co/feed");

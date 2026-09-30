@@ -16,9 +16,10 @@ function route(parts, params) {
     return { key: `markets-${page}`, path: `/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=250&page=${page}&sparkline=false&price_change_percentage=${PCT}`, ttl: 1800 };
   }
   if (p === "search/trending") return { key: "trending", path: "/search/trending", ttl: 1800 };
-  if (p === "derivatives") return { key: "derivatives", path: "/derivatives", ttl: 3600 };
-  if (p === "onchain/networks/trending_pools") return { key: "dex-trending", path: "/onchain/networks/trending_pools?include=base_token&page=1", ttl: 1800 };
-  if (p === "onchain/networks/new_pools") return { key: "dex-new", path: "/onchain/networks/new_pools?include=base_token&page=1", ttl: 1800 };
+  // One exchange: /derivatives (all exchanges) is several MB, too big to relay.
+  if (p === "derivatives/exchanges/binance_futures") return { key: "deriv-binance", path: "/derivatives/exchanges/binance_futures?include_tickers=unexpired", ttl: 3600 };
+  if (p === "onchain/networks/trending_pools") return { key: "dex-trending", path: "/onchain/networks/trending_pools?include=base_token&page=1", ttl: 3600 };
+  if (p === "onchain/networks/new_pools") return { key: "dex-new", path: "/onchain/networks/new_pools?include=base_token&page=1", ttl: 3600 };
   return null;
 }
 
