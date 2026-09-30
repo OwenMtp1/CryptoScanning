@@ -152,6 +152,7 @@ interface Status {
   loop: string;
   signals24h: number;
   filteredByPrefs?: number;
+  sent24h?: unknown;
   market?: unknown;
   sources: Record<string, string>;
   errors: string[];
@@ -209,6 +210,7 @@ export class RadarState {
     /** coin:kind → last sent (shared by the bot's own signals and the site's relayed ones). */
     seen: Map<string, number>;
     prefs: DiscordPrefs;
+    recentSent: { ts: number; dir: Direction; kind: IntelKind; coin: string; channel: string }[];
     listings: { cb: Set<string>; cbCoins: Set<string>; bn: Set<string>; seededCb: boolean; seededBn: boolean };
     lsBackoffUntil: number;
     flow: Map<string, number>;
@@ -270,6 +272,29 @@ export class RadarState {
       }
       const L = await this.run(() => this.load());
       return Response.json({ prefs: L.prefs, kinds: ALL_KINDS, sources: ALL_SOURCES, channels: L.channels.map((c) => ({ id: c.id, label: c.label, directions: c.directions, active: c.n.active })) });
+    }
+    if (path === "/test-channels" && req.method === "POST") {
+      const key = this.env.RELAY_KEY?.trim();
+      if (!key) return Response.json({ ok: false, error: "RELAY_KEY non configurée sur le worker" }, { status: 503 });
+      if (!sameSecret(req.headers.get("x-relay-key") ?? "", key)) return Response.json({ ok: false, error: "code de relais incorrect" }, { status: 401 });
+      return Response.json(
+        await this.run(async () => {
+          const L = await this.load();
+          const results = [];
+          for (const c of L.channels) {
+            const what = c.id === "leverage" ? "marchés à levier (long/short, liquidations)" : c.directions.map((d) => (d === "bullish" ? "haussiers 🟢" : d === "bearish" ? "baissiers 🔴" : "neutres ⚪")).join(" + ");
+            const r = c.n.active ? await c.n.test(`🧪 **Test** depuis le panneau Discord du site : ce salon reçoit les signaux ${what}.`) : { ok: false, message: c.n.view().lastError ?? "webhook invalide" };
+            results.push({ channel: c.label, ok: r.ok, message: r.message });
+          }
+          const missing = [
+            !this.env.DISCORD_WEBHOOK_BULLISH && "DISCORD_WEBHOOK_BULLISH (salon haussier)",
+            !this.env.DISCORD_WEBHOOK_BEARISH && "DISCORD_WEBHOOK_BEARISH (salon baissier)",
+            !this.env.DISCORD_WEBHOOK_NEUTRAL && !this.env.DISCORD_WEBHOOK_URL && "DISCORD_WEBHOOK_NEUTRAL (salon neutre)",
+            !this.env.DISCORD_WEBHOOK_LEVERAGE && "DISCORD_WEBHOOK_LEVERAGE (salon levier)",
+          ].filter(Boolean);
+          return { ok: true, results, missing };
+        }),
+      );
     }
     if (path === "/stats") {
       const L = await this.run(() => this.load());
@@ -346,6 +371,7 @@ export class RadarState {
       coinbaseBackoffUntil: 0,
       seen: new Map(Object.entries(meta.seen ?? {})),
       prefs: (await st.get<DiscordPrefs>("prefs")) ?? defaultPrefs(cfg.discord.minStrength),
+      recentSent: (await st.get<{ ts: number; dir: Direction; kind: IntelKind; coin: string; channel: string }[]>("recentSent")) ?? [],
       listings: (() => {
         return { cb: new Set<string>(), cbCoins: new Set<string>(), bn: new Set<string>(), seededCb: false, seededBn: false };
       })(),
@@ -375,6 +401,12 @@ export class RadarState {
     });
     loaded.svc.restore(await st.get<IntelSavedState>("intel"));
     loaded.svc.tracker.importState((await st.get<never[]>("tracker")) ?? []);
+    // v2: the old version remembered LONG / SHORT setups without alerting them (warm-up, ±40 threshold):
+    // forget them once so every current setup is sent.
+    if (!(await st.get<boolean>("levReset2"))) {
+      loaded.svc.resetLeverageBias();
+      await st.put({ levReset2: true });
+    }
     const li = await st.get<{ cb: string[]; cbCoins: string[]; bn: string[]; seededCb: boolean; seededBn: boolean }>("listings");
     if (li) loaded.listings = { cb: new Set(li.cb), cbCoins: new Set(li.cbCoins), bn: new Set(li.bn), seededCb: li.seededCb, seededBn: li.seededBn };
     this.loaded = loaded;
@@ -401,14 +433,26 @@ export class RadarState {
     this.signalsThisRun++;
     L.sentLog.push(this.clock);
     const lev = L.channels.find((c) => c.id === "leverage");
+    const note = (channel: string) => {
+      L.recentSent.push({ ts: this.clock, dir: s.direction, kind: s.kind, coin: s.coin, channel });
+      if (L.recentSent.length > 400) L.recentSent.splice(0, L.recentSent.length - 400);
+    };
     if (lev && LEVERAGE_KINDS.has(s.kind)) {
       lev.n.consider(s);
+      note(lev.label);
       return;
     }
     const targets = L.channels.filter((c) => c.id !== "leverage" && c.directions.includes(s.direction));
-    for (const c of targets) c.n.consider(s.direction === "neutral" && c.id !== "general" ? { ...s, title: `⚪ ${s.title}`.slice(0, 256) } : s);
+    for (const c of targets) {
+      c.n.consider(s.direction === "neutral" && c.id !== "general" ? { ...s, title: `⚪ ${s.title}`.slice(0, 256) } : s);
+      note(c.label);
+    }
     // Nowhere to go (e.g. only a leverage channel): the leverage channel gets it rather than nothing.
-    if (!targets.length && lev) lev.n.consider(s);
+    if (!targets.length && lev) {
+      lev.n.consider(s);
+      note(lev.label);
+    }
+    if (!targets.length && !lev) note("aucun salon");
   }
 
   /** New pairs / coins compared with everything seen before (the first pass only learns). */
@@ -617,7 +661,7 @@ export class RadarState {
           // A missing futures listing (400) is normal for small coins: keep only real problems visible.
           this.errors = this.errors.filter((e) => !/^Long\/short .* HTTP (400|404)/.test(e));
         }
-        svc.onPerps(markets, extras, now);
+        svc.onPerps(markets, extras, now, L.warm);
         sources.leverage = `${markets.length} marchés perpétuels`;
       }
       L.lastFullRunAt = now;
@@ -713,6 +757,11 @@ export class RadarState {
       loop: `prix Binance et Coinbase toutes les ${FAST_MS / 1000} s, autres sources toutes les ${FULL_MS / 60_000} min, une notification Discord par signal`,
       signals24h: L.sentLog.filter((t) => t > this.clock - 86_400_000).length,
       filteredByPrefs: L.filtered,
+      sent24h: (() => {
+        const day = L.recentSent.filter((x) => x.ts > this.clock - 86_400_000);
+        const by = (f: (x: (typeof day)[number]) => string) => day.reduce<Record<string, number>>((a, x) => ((a[f(x)] = (a[f(x)] ?? 0) + 1), a), {});
+        return { byChannel: by((x) => x.channel), byDirection: by((x) => x.dir), byKind: by((x) => x.kind), last: day.slice(-10).reverse() };
+      })(),
       market: L.svc.marketContext(),
       // Keep the detail of the last full pass visible between fast runs.
       sources: full ? sources : { ...(prev?.sources ?? {}), ...sources },
@@ -722,6 +771,7 @@ export class RadarState {
       discord: this.discordView(L),
     };
     const entries: Record<string, unknown> = {
+      recentSent: L.recentSent,
       listings: { cb: [...L.listings.cb], cbCoins: [...L.listings.cbCoins], bn: [...L.listings.bn], seededCb: L.listings.seededCb, seededBn: L.listings.seededBn },
       cb: L.history.export(),
       bn: L.binance.export(), discord: Object.fromEntries(L.channels.map((c) => [c.id, c.n.exportState()])), meta: this.meta(L), status };
@@ -783,6 +833,9 @@ export default {
       const len = Number(req.headers.get("content-length") ?? 0);
       if (len > 64_000) return Response.json({ ok: false, error: "trop gros" }, { status: 413 });
       return stub(env).fetch("https://radar/relay", { method: "POST", headers: { "x-relay-key": req.headers.get("x-relay-key") ?? "", "content-type": "application/json" }, body: await req.text() });
+    }
+    if (req.method === "POST" && url.pathname === "/test-channels") {
+      return stub(env).fetch("https://radar/test-channels", { method: "POST", headers: { "x-relay-key": req.headers.get("x-relay-key") ?? "" } });
     }
     if (req.method === "POST" && url.pathname === "/prefs") {
       return stub(env).fetch("https://radar/prefs", { method: "POST", headers: { "x-relay-key": req.headers.get("x-relay-key") ?? "", "content-type": "application/json" }, body: (await req.text()).slice(0, 32_000) });

@@ -94,7 +94,8 @@ export const IntelConfigSchema = z.object({
   leverage: z
     .object({
       /** |score| from which a LONG / SHORT setup becomes a signal. */
-      signalScore: z.number().min(1).max(100).default(40),
+      /** |score| from which a LONG / SHORT indication is alerted — same threshold as the page (±25). */
+      signalScore: z.number().min(1).max(100).default(25),
       /** Liquidations of one side in 5 min (USD) that make a signal. */
       liquidationUsd5m: nonNeg.default(500_000),
     })

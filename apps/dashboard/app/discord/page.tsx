@@ -5,7 +5,14 @@ import { useEffect, useState } from "react";
 import { useDialogs } from "@/components/Dialogs";
 import { Card } from "@/components/ui";
 import { getJson, postAction } from "@/lib/api";
-import { KIND_LABEL, SOURCE_LABEL } from "@/lib/intel";
+import { KIND_LABEL, SOURCE_LABEL, fmtAgo, type SourcesResponse } from "@/lib/intel";
+
+interface Sent24h {
+  byChannel: Record<string, number>;
+  byDirection: Record<string, number>;
+  byKind: Record<string, number>;
+  last: { ts: number; dir: string; kind: string; coin: string; channel: string }[];
+}
 
 interface Prefs {
   enabled: boolean;
@@ -46,6 +53,9 @@ export default function DiscordPage() {
   const [exc, setExc] = useState("");
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [tests, setTests] = useState<{ results: { channel: string; ok: boolean; message: string }[]; missing: string[] } | null>(null);
+  const [sent, setSent] = useState<{ s: Sent24h | null; filtered: number | null } | null>(null);
 
   const load = () =>
     getJson<PrefsResponse>("/api/web/prefs").then(
@@ -60,7 +70,29 @@ export default function DiscordPage() {
     );
   useEffect(() => {
     void load();
+    const loadSent = () =>
+      getJson<SourcesResponse>("/api/intel/sources").then(
+        (r) => {
+          const st = r.discordWorker?.status as { sent24h?: Sent24h; filteredByPrefs?: number } | undefined;
+          setSent({ s: st?.sent24h ?? null, filtered: st?.filteredByPrefs ?? null });
+        },
+        () => {},
+      );
+    void loadSent();
+    const t = setInterval(loadSent, 30_000);
+    return () => clearInterval(t);
   }, []);
+
+  const testAll = async () => {
+    setTesting(true);
+    try {
+      setTests(await postAction("/api/web/test-channels", {}));
+    } catch (e) {
+      notify(`Test impossible : ${(e as Error).message}`, "error");
+    } finally {
+      setTesting(false);
+    }
+  };
 
   if (err || !p || !d)
     return (
@@ -189,6 +221,60 @@ export default function DiscordPage() {
           </button>
           {p.updatedAt && <span className="text-xs text-slate-500">dernière modification : {new Date(p.updatedAt).toLocaleString("fr-FR")}</span>}
         </div>
+      </Card>
+
+      <Card title="Vérifier les salons">
+        <p className="text-sm text-slate-400">Envoie un message de test dans chaque salon configuré : si un salon ne reçoit rien, son webhook est faux ou manquant.</p>
+        <button onClick={() => void testAll()} disabled={testing} className="mt-2 rounded bg-emerald-700 px-3 py-1.5 text-sm font-semibold text-white hover:bg-emerald-600 disabled:opacity-40">
+          {testing ? "Envoi des tests…" : "🧪 Tester tous les salons"}
+        </button>
+        {tests && (
+          <ul className="mt-3 space-y-1 text-sm">
+            {tests.results.map((r) => (
+              <li key={r.channel} className={r.ok ? "text-emerald-400" : "text-rose-400"}>
+                {r.ok ? "✅" : "❌"} Salon {r.channel} : {r.message}
+              </li>
+            ))}
+            {tests.missing.map((m) => (
+              <li key={m} className="text-amber-300">
+                ⚠️ non configuré : {m}
+              </li>
+            ))}
+          </ul>
+        )}
+      </Card>
+
+      <Card title="Envoyés par le bot (24 h)">
+        {!sent?.s ? (
+          <p className="text-sm text-slate-500">Pas encore de données (le bot les publie à chaque analyse).</p>
+        ) : (
+          <div className="space-y-2 text-sm">
+            <div className="flex flex-wrap gap-4">
+              {Object.entries(sent.s.byChannel).map(([k, v]) => (
+                <span key={k}>
+                  Salon <strong>{k}</strong> : <span className="num">{v}</span>
+                </span>
+              ))}
+              {!Object.keys(sent.s.byChannel).length && <span className="text-slate-500">aucun envoi sur 24 h</span>}
+            </div>
+            <div className="flex flex-wrap gap-4 text-xs text-slate-400">
+              <span>🟢 haussiers {sent.s.byDirection.bullish ?? 0}</span>
+              <span>🔴 baissiers {sent.s.byDirection.bearish ?? 0}</span>
+              <span>⚪ neutres {sent.s.byDirection.neutral ?? 0}</span>
+              <span>⚖️ levier {(sent.s.byKind.LEVERAGE_LONG ?? 0) + (sent.s.byKind.LEVERAGE_SHORT ?? 0) + (sent.s.byKind.LIQUIDATIONS_LONG ?? 0) + (sent.s.byKind.LIQUIDATIONS_SHORT ?? 0)}</span>
+              {sent.filtered !== null && <span>écartés par tes réglages : {sent.filtered}</span>}
+            </div>
+            {sent.s.last.length > 0 && (
+              <ul className="text-xs text-slate-400">
+                {sent.s.last.map((x, i) => (
+                  <li key={i}>
+                    il y a {fmtAgo(x.ts)} · {x.coin} · {KIND_LABEL[x.kind as keyof typeof KIND_LABEL] ?? x.kind} → salon {x.channel}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
       </Card>
 
       <Card title="Salons Discord">

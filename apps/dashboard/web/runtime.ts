@@ -407,6 +407,18 @@ export async function startWeb(): Promise<DemoBackend> {
       return r.body;
     },
     async post(path, body) {
+      if (path === "/api/web/test-channels") {
+        const key = readKey();
+        if (!key) return { status: 400, body: { ok: false, error: "entre d'abord ton code de relais (page Sources → carte Discord)" } };
+        const r = await fetchText("/api/discord/test-channels", { method: "POST", headers: { "content-type": "application/json", "x-relay-key": key }, body: "{}", timeoutMs: 30_000 });
+        let b: unknown = {};
+        try {
+          b = JSON.parse(r.text);
+        } catch {
+          b = { ok: false, error: `HTTP ${r.status}` };
+        }
+        return { status: r.status, body: b };
+      }
       if (path === "/api/web/prefs") {
         const key = readKey();
         if (!key) return { status: 400, body: { ok: false, error: "entre d'abord ton code de relais (page Sources → carte Discord)" } };

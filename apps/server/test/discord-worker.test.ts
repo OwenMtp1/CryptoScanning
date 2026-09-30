@@ -246,6 +246,37 @@ describe("Discord worker", () => {
     expect(byHook["2"]!.slice(1).some((b) => b.includes("SOLX volume"))).toBe(false);
   });
 
+  it("leverage setups already present at startup are alerted once the bot is live (threshold ±25), and every channel can be tested", async () => {
+    vi.useFakeTimers({ now: Date.UTC(2026, 8, 17, 12, 0), toFake: ["Date"] });
+    const byHook: Record<string, string[]> = {};
+    vi.stubGlobal("fetch", vi.fn(async (u: string, i?: { method?: string; body?: string }) => {
+      if (u.startsWith("https://discord.com/")) (byHook[u.split("/")[5]!] ??= []).push(i?.body ?? "");
+      return fakeFetch(u, i);
+    }));
+    const st = storage();
+    const env = { RADAR: {} as never, DISCORD_WEBHOOK_NEUTRAL: "https://discord.com/api/webhooks/3/mid", DISCORD_WEBHOOK_LEVERAGE: "https://discord.com/api/webhooks/4/lev", SITE_URL: SITE, RELAY_KEY: "k-123456789012345" };
+    const run = () => new RadarState({ storage: st } as never, env).fetch(new Request("https://radar/scan"));
+    // funding 0.1 % + 3.2 longs per short = −27: SHORT already on the first (silent) pass.
+    perps = [{ product_id: "BTC-PERP-INTX", price: "100000", status: "online", approximate_quote_24h_volume: "5e9", future_product_details: { contract_root_unit: "BTC", contract_expiry_type: "PERPETUAL", contract_display_name: "BTC PERP", perpetual_details: { max_leverage: "20", funding_rate: "0.001", open_interest: "100" } } }];
+    price = 1;
+    await run();
+    expect((byHook["4"] ?? []).length).toBe(1); // welcome only
+    vi.setSystemTime(Date.now() + 5 * 60_000);
+    await run();
+    const lev = (byHook["4"] ?? []).slice(1).map((b) => JSON.parse(b).embeds[0].title).join(" | ");
+    expect(lev).toContain("BTC PERP : indication SHORT");
+    const status = (await (await new RadarState({ storage: st } as never, env).fetch(new Request("https://radar/status"))).json()) as { sent24h: { byChannel: Record<string, number> } };
+    expect(status.sent24h.byChannel.levier).toBeGreaterThan(0);
+    // Test every channel
+    const bad = await new RadarState({ storage: st } as never, env).fetch(new Request("https://radar/test-channels", { method: "POST", headers: { "x-relay-key": "nope" } }));
+    expect(bad.status).toBe(401);
+    const t = (await (await new RadarState({ storage: st } as never, env).fetch(new Request("https://radar/test-channels", { method: "POST", headers: { "x-relay-key": "k-123456789012345" } }))).json()) as { results: { channel: string; ok: boolean }[]; missing: string[] };
+    expect(t.results.map((r) => [r.channel, r.ok])).toEqual([["général", true], ["levier", true]]);
+    expect(t.missing.join()).toContain("DISCORD_WEBHOOK_BULLISH");
+    expect(byHook["3"]!.some((b) => b.includes("🧪"))).toBe(true);
+    perps = [];
+  });
+
   it("prefs helpers", () => {
     const s = { id: "x", ts: 0, coin: "SOL", coinName: null, kind: "PUMP_EARLY" as const, direction: "bullish" as const, source: "binance" as const, strength: 60, title: "t", reasons: [], metrics: {}, priceUsd: 1, url: null };
     expect(passesPrefs(defaultPrefs(), s, null)).toBe(true);

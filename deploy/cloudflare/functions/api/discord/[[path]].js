@@ -29,13 +29,13 @@ export async function onRequestGet(ctx) {
 
 export async function onRequestPost(ctx) {
   const path = [].concat(ctx.params.path ?? []).join("/");
-  if (path !== "prefs") return json({ error: "not_allowed" }, 404);
+  if (path !== "prefs" && path !== "test-channels") return json({ error: "not_allowed" }, 404);
   const b = base(ctx);
   if (!b) return json({ ok: false, error: "DISCORD_WORKER_URL non configurée sur le site" }, 503);
   const body = await ctx.request.text();
   if (body.length > 32000) return json({ ok: false, error: "trop gros" }, 413);
   try {
-    const r = await fetch(`${b}/prefs`, { method: "POST", headers: { "content-type": "application/json", "x-relay-key": ctx.request.headers.get("x-relay-key") || "" }, body });
+    const r = await fetch(`${b}/${path}`, { method: "POST", headers: { "content-type": "application/json", "x-relay-key": ctx.request.headers.get("x-relay-key") || "" }, body });
     return new Response(await r.text(), { status: r.status, headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" } });
   } catch {
     return json({ ok: false, error: "bot injoignable" }, 502);

@@ -525,7 +525,11 @@ export class IntelService {
    * Coinbase perpetual markets: reading per market and LONG / SHORT setup
    * signals when the score crosses the configured level.
    */
-  onPerps(markets: PerpMarket[], extras: Map<string, { takerBuyRatio?: number | null; longShortRatio?: number | null }>, now = this.now()) {
+  /**
+   * `emit: false` builds the board without remembering the indications (the bot's warm-up pass),
+   * so markets already LONG / SHORT are alerted once the bot is live instead of being skipped.
+   */
+  onPerps(markets: PerpMarket[], extras: Map<string, { takerBuyRatio?: number | null; longShortRatio?: number | null }>, now = this.now(), emit = true) {
     const ctx = this.marketContext();
     const board: LeverageReading[] = [];
     const cands: Candidate[] = [];
@@ -548,8 +552,8 @@ export class IntelService {
       board.push(reading);
       const setup = Math.abs(reading.score) >= this.cfg.leverage.signalScore ? reading.bias : "NEUTRE";
       const last = this.lastBias.get(m.productId) ?? "NEUTRE";
-      if (setup !== last) this.lastBias.set(m.productId, setup);
-      if (setup !== "NEUTRE" && setup !== last) {
+      if (emit && setup !== last) this.lastBias.set(m.productId, setup);
+      if (emit && setup !== "NEUTRE" && setup !== last) {
         const long = setup === "LONG";
         cands.push({
           coin: m.coin,
@@ -570,6 +574,11 @@ export class IntelService {
     this.leverageAt = now;
     this.setSourceState("leverage", "ok", `${markets.length} marchés perpétuels Coinbase`, now, markets.length);
     this.emit(this.ingest(cands, now), []);
+  }
+
+  /** Forget the remembered LONG / SHORT indications: every current setup is alerted again once. */
+  resetLeverageBias() {
+    this.lastBias.clear();
   }
 
   /** Candidates produced outside the built-in sources (e.g. new listings detected by the bot). */
