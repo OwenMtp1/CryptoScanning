@@ -9,7 +9,24 @@
  *   read cross-origin from a browser).
  * No Discord here: alerts need a process that runs 24/7.
  */
-import { CoinbasePriceHistory, IntelConfigSchema, parseFeed, parseProductsPage, type LogEvent } from "@radar/core";
+import {
+  CoinbasePriceHistory,
+  IntelConfigSchema,
+  createDemo,
+  demoBuy,
+  demoClose,
+  demoDeposit,
+  demoOpen,
+  demoSell,
+  loadDemo,
+  parseFeed,
+  parseProductsPage,
+  tickDemo,
+  valueDemo,
+  type DemoResult,
+  type DemoState,
+  type LogEvent,
+} from "@radar/core";
 import { handleAction, handleGet, type RouteContext } from "../../server/src/api/routes";
 import { loadPerpMarkets } from "../../server/src/intel/perp-sources";
 import { BinanceFeed } from "../../server/src/intel/binance-feed";
@@ -432,6 +449,67 @@ export async function startWeb(): Promise<DemoBackend> {
   // Chart ranges → candle interval and count.
   const RANGES: Record<string, [CandleInterval, number]> = { "1h": ["1m", 60], "1d": ["5m", 288], "1w": ["1h", 168], "1m": ["4h", 180], "1y": ["1d", 365] };
 
+  // ── Demo account (fake money), kept in this browser. Prices: the live feed first, else the last candle.
+  const DEMO_STORE = "crypto-radar-demo-account-v1";
+  let demo: DemoState = (() => {
+    try {
+      return loadDemo(JSON.parse(localStorage.getItem(DEMO_STORE) ?? "null"), Date.now());
+    } catch {
+      return createDemo(Date.now());
+    }
+  })();
+  let demoEvents: { ts: number; text: string }[] = [];
+  const saveDemo = () => {
+    try {
+      localStorage.setItem(DEMO_STORE, JSON.stringify(demo));
+    } catch {
+      // quota / private mode: the account lives until the tab is closed
+    }
+  };
+  const fallbackPx = new Map<string, { price: number; at: number }>();
+  const fetchingPx = new Set<string>();
+  const refreshFallback = (coin: string) => {
+    if (fetchingPx.has(coin)) return;
+    fetchingPx.add(coin);
+    void loadCandles(directGet, coin, "1m", 3, { extraBase: "" })
+      .then((r) => {
+        const c = r.candles.at(-1);
+        if (c) fallbackPx.set(coin, { price: c.c, at: Date.now() });
+      })
+      .catch(() => {})
+      .finally(() => fetchingPx.delete(coin));
+  };
+  const demoPrice = (coin: string): number | null => {
+    const row = svc.engine.coin(coin);
+    const live = row?.live && Date.now() - row.live.updatedAt < 120_000 ? row.live.price : null;
+    if (live) return live;
+    const f = fallbackPx.get(coin);
+    if (!f || Date.now() - f.at > 30_000) refreshFallback(coin);
+    return f?.price ?? row?.priceUsd ?? null;
+  };
+  /** Current price of a coin for an order: waits for a fresh one when this page has none yet. */
+  const orderPrice = async (coin: string): Promise<number | null> => {
+    const p = demoPrice(coin);
+    if (p) return p;
+    try {
+      const r = await loadCandles(directGet, coin, "1m", 3, { extraBase: "" });
+      const c = r.candles.at(-1);
+      if (c) fallbackPx.set(coin, { price: c.c, at: Date.now() });
+      return c?.c ?? null;
+    } catch {
+      return null;
+    }
+  };
+  setInterval(() => {
+    const held = [...Object.keys(demo.spot), ...demo.positions.map((p) => p.coin)];
+    if (!held.length && demo.deposited === 0) return;
+    const r = tickDemo(demo, demoPrice, Date.now());
+    demo = r.state;
+    if (r.events.length) demoEvents = [...r.events.map((text) => ({ ts: Date.now(), text })), ...demoEvents].slice(0, 20);
+    saveDemo();
+  }, 5_000);
+  const demoView = () => ({ state: demo, valuation: valueDemo(demo, demoPrice), events: demoEvents });
+
   const save = () => {
     const st = svc.exportState({ cgLastRun: cg.lastRuns() });
     let keep = 4000;
@@ -488,6 +566,13 @@ export async function startWeb(): Promise<DemoBackend> {
         const body = r.body as { signals: { id: string }[] };
         return { ...body, signals: body.signals.map((x) => ({ ...x, discord: markOf(x.id) })), discordKey: !!readKey() };
       }
+      if (u.pathname === "/api/web/demo") return demoView();
+      if (u.pathname === "/api/web/price") {
+        const coin = (u.searchParams.get("coin") ?? "").toUpperCase();
+        if (!/^[A-Z0-9]{1,20}$/.test(coin)) throw new Error("crypto invalide");
+        const row = svc.engine.coin(coin);
+        return { coin, price: await orderPrice(coin), name: row?.name ?? null, change24h: row?.change24h ?? null, maxLeverage: svc.setupContext(coin).maxLeverage };
+      }
       if (u.pathname === "/api/intel/setups") return mergedSetups(u.searchParams.get("bias") ?? undefined);
       if (u.pathname === "/api/web/candles") {
         const coin = (u.searchParams.get("coin") ?? "").toUpperCase();
@@ -518,6 +603,53 @@ export async function startWeb(): Promise<DemoBackend> {
       return r.body;
     },
     async post(path, body) {
+      if (path === "/api/web/demo") {
+        // Paper trading only: nothing here can reach an exchange.
+        const a = (body ?? {}) as Record<string, unknown>;
+        const now = Date.now();
+        const coin = typeof a.coin === "string" ? a.coin.toUpperCase() : "";
+        let r: DemoResult;
+        switch (a.action) {
+          case "deposit":
+            r = demoDeposit(demo, Number(a.amount), now);
+            break;
+          case "buy": {
+            const px = await orderPrice(coin);
+            r = px ? demoBuy(demo, coin, Number(a.usd), px, now) : { ok: false, error: `pas de prix pour ${coin}` };
+            break;
+          }
+          case "sell": {
+            const px = await orderPrice(coin);
+            r = px ? demoSell(demo, coin, Number(a.fraction), px, now) : { ok: false, error: `pas de prix pour ${coin}` };
+            break;
+          }
+          case "open": {
+            const px = await orderPrice(coin);
+            const num = (v: unknown) => (v === null || v === undefined || v === "" ? null : Number(v));
+            r = px
+              ? demoOpen(demo, { coin, side: a.side === "SHORT" ? "SHORT" : "LONG", leverage: Number(a.leverage), margin: Number(a.margin), price: px, stop: num(a.stop), takeProfit: num(a.takeProfit), maxLeverage: svc.setupContext(coin).maxLeverage }, now)
+              : { ok: false, error: `pas de prix pour ${coin}` };
+            break;
+          }
+          case "close": {
+            const pos = demo.positions.find((p) => p.id === a.id);
+            const px = pos ? await orderPrice(pos.coin) : null;
+            r = pos && px ? demoClose(demo, pos.id, px, now) : { ok: false, error: "position ou prix introuvable" };
+            break;
+          }
+          case "reset":
+            if (a.confirm !== "RESET") return { status: 400, body: { ok: false, error: "confirmation manquante" } };
+            r = { ok: true, state: createDemo(now), message: "Compte de démo remis à zéro" };
+            demoEvents = [];
+            break;
+          default:
+            return { status: 400, body: { ok: false, error: "action inconnue" } };
+        }
+        if (!r.ok) return { status: 400, body: { ok: false, error: r.error } };
+        demo = r.state;
+        saveDemo();
+        return { status: 200, body: { ok: true, message: r.message, ...demoView() } };
+      }
       if (path === "/api/web/test-channels") {
         const key = readKey();
         if (!key) return { status: 400, body: { ok: false, error: "entre d'abord ton code de relais (page Sources → carte Discord)" } };

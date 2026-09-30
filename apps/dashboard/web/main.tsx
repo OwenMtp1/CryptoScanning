@@ -9,6 +9,7 @@ import UniversPage from "../app/univers/page";
 import CourbePage from "../app/courbe/page";
 import SetupsPage from "../app/setups/page";
 import TendancesPage from "../app/tendances/page";
+import DemoPage from "../app/demo/page";
 import { DialogProvider } from "../components/Dialogs";
 import { CoinDrawerProvider } from "../components/Intel";
 import { RadarStreamProvider } from "../lib/stream";
@@ -24,6 +25,7 @@ const ROUTES: Record<string, ComponentType> = {
   "/courbe": CourbePage,
   "/setups": SetupsPage,
   "/tendances": TendancesPage,
+  "/demo": DemoPage,
   "/discord": DiscordPage,
 };
 const NAV = [
@@ -34,6 +36,7 @@ const NAV = [
   ["/setups", "Setups"],
   ["/courbe", "Courbe"],
   ["/levier", "Levier"],
+  ["/demo", "Démo"],
   ["/discord", "Discord"],
   ["/sources", "Sources"],
 ] as const;

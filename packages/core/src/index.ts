@@ -39,3 +39,4 @@ export * from "./intel/leverage.js";
 export * from "./intel/exchanges.js";
 export * from "./intel/setup.js";
 export * from "./intel/trends.js";
+export * from "./trading/demo-account.js";

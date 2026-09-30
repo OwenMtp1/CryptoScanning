@@ -47,12 +47,16 @@ const timeLabel = (t: number, spanMs: number) => {
 
 export function PriceChart({ candles, levels = [], bands = [], height: tall = 380, title }: { candles: Candle[]; levels?: PriceLevel[]; bands?: PriceBand[]; height?: number; title: string }) {
   const box = useRef<HTMLDivElement>(null);
-  const [width, setWidth] = useState(800);
+  // 0 until measured: never impose a width on the page before knowing the room available.
+  const [width, setWidth] = useState(0);
   const [hover, setHover] = useState<number | null>(null);
   const narrow = width < 560;
   const PAD = narrow ? PAD_NARROW : PAD_WIDE;
   const height = narrow ? Math.min(tall, 290) : tall;
 
+  // The root element changes (placeholder → chart): observe the current one.
+  const hasBox = width > 0;
+  const hasData = candles.length >= 2;
   useEffect(() => {
     const el = box.current;
     if (!el) return;
@@ -65,7 +69,7 @@ export function PriceChart({ candles, levels = [], bands = [], height: tall = 38
       ro?.disconnect();
       window.removeEventListener("resize", on);
     };
-  }, []);
+  }, [hasBox, hasData]);
 
   const g = useMemo(() => {
     if (candles.length < 2) return null;
@@ -90,7 +94,8 @@ export function PriceChart({ candles, levels = [], bands = [], height: tall = 38
     return { lo, hi, x, y, line, area, yTicks, xTicks, iw, ih, t0, t1 };
   }, [candles, levels, bands, width, height, PAD]);
 
-  if (!g) return <div className="flex h-40 items-center justify-center text-sm text-slate-500">Pas assez de données pour tracer la courbe.</div>;
+  if (!width) return <div ref={box} className="w-full min-w-0" style={{ height }} />;
+  if (!g) return <div ref={box} className="flex h-40 items-center justify-center text-sm text-slate-500">Pas assez de données pour tracer la courbe.</div>;
 
   const first = candles[0]!;
   const lastC = candles[candles.length - 1]!;
@@ -124,7 +129,7 @@ export function PriceChart({ candles, levels = [], bands = [], height: tall = 38
     }, []);
 
   return (
-    <div ref={box} className="relative w-full select-none" role="img" aria-label={`${title} : de ${fmtPrice(first.c)} à ${fmtPrice(lastC.c)} (${fmtPct(((lastC.c - first.c) / first.c) * 100)})`}>
+    <div ref={box} className="relative w-full min-w-0 select-none" role="img" aria-label={`${title} : de ${fmtPrice(first.c)} à ${fmtPrice(lastC.c)} (${fmtPct(((lastC.c - first.c) / first.c) * 100)})`}>
       <svg width={width} height={height} className="block">
         <rect x={0} y={0} width={width} height={height} fill={SURFACE} rx={6} />
         {g.yTicks.map((v) => (

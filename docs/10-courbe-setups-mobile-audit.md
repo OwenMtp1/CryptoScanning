@@ -216,3 +216,27 @@ Le mode est actif par défaut et se règle dans la page Discord, carte « Envoi 
   notification par alerte, tout de suite).
 - **Si la file grossit trop :** au rythme de 10 alertes toutes les 5 min (120 par heure et par salon), une journée
   très agitée peut prendre du retard. Réduis alors l'intervalle ou filtre les types les plus bavards.
+
+## 12. Onglet « Démo » : trading avec de l'argent fictif
+
+- **Capital fictif.** Tu en ajoutes quand tu veux (+1 000 $, +10 000 $ ou un montant libre) et tu peux tout remettre
+  à zéro.
+- **Toutes les cryptos du site.** Recherche avec suggestions, prix en direct (flux Binance du site, sinon dernière
+  bougie de Binance, Coinbase, OKX, Bybit, KuCoin, MEXC ou Gate.io) et courbe intégrée.
+- **Au comptant.** Achat par montant en $ (10 / 25 / 50 / 100 % des liquidités) et vente de 25 à 100 % de la ligne.
+- **Levier.** LONG ou SHORT de ×1 jusqu'au levier maximal du marché (×50 si inconnu, ×100 au plus), en marge isolée.
+  - Prix de liquidation affiché avant d'ouvrir.
+  - Stop et objectif facultatifs, ou pré-remplis avec le setup trader (stop, 1er objectif et levier raisonnable).
+- **Exécution simulée.**
+  - Frais : 0,10 % au comptant, 0,05 % en levier, à l'ouverture et à la fermeture.
+  - Glissement de prix : environ 0,05 % plus un effet de taille.
+  - Liquidation dès que la perte atteint la marge moins une marge de maintenance de 0,5 %. Toute la marge est perdue.
+  - Stops, objectifs et liquidations sont vérifiés toutes les 5 s tant que le site est ouvert.
+  - Le financement (funding) n'est pas simulé.
+- **Suivi.**
+  - Valeur totale et résultat sur le capital déposé.
+  - Courbe de la valeur du compte (un point toutes les 5 min).
+  - Positions (distance à la liquidation, en rouge sous 2 %) et cryptos détenues.
+  - Historique et statistiques : taux de réussite, meilleur et pire trade, frais payés.
+- **Où c'est gardé.** Le compte est enregistré dans ce navigateur. Le moteur est `packages/core/src/trading/demo-account.ts`,
+  entièrement testé. **Aucun ordre réel n'est jamais envoyé.**
