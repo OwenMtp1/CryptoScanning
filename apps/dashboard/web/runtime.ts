@@ -9,7 +9,7 @@
  *   read cross-origin from a browser).
  * No Discord here: alerts need a process that runs 24/7.
  */
-import { CoinbasePriceHistory, IntelConfigSchema, parseFeed, parseProductsPage, type LogEvent } from "@radar/core";
+import { CoinbasePriceHistory, IntelConfigSchema, parseFeed, parsePerps, parseProductsPage, type LogEvent } from "@radar/core";
 import { handleAction, handleGet, type RouteContext } from "../../server/src/api/routes";
 import { BinanceFeed } from "../../server/src/intel/binance-feed";
 import { CallBudget } from "../../server/src/intel/budget";
@@ -135,6 +135,29 @@ export async function startWeb(): Promise<DemoBackend> {
       svc.setSourceState("coinbase", "down", `liste Coinbase indisponible : ${(err as Error).message}`);
     }
   };
+
+  // Coinbase perpetual contracts: the site lists them itself (all markets visible even before the bot answers).
+  const pollPerps = async () => {
+    const direct = "https://api.coinbase.com/api/v3/brokerage/market/products?product_type=FUTURE&contract_expiry_type=PERPETUAL";
+    try {
+      let r;
+      try {
+        r = await fetchText(direct, { timeoutMs: 20_000 });
+        if (r.status !== 200) throw new Error(`HTTP ${r.status}`);
+      } catch {
+        r = await fetchText("/api/coinbase/products?type=perp", { timeoutMs: 20_000 });
+      }
+      if (r.status !== 200) throw new Error(`HTTP ${r.status}`);
+      const markets = parsePerps(JSON.parse(r.text));
+      if (markets.length) svc.onPerps(markets, new Map());
+    } catch (err) {
+      svc.setSourceState("leverage", "degraded", `marchés à levier Coinbase indisponibles : ${(err as Error).message}`);
+    }
+  };
+  setTimeout(() => {
+    void pollPerps();
+    setInterval(() => void pollPerps(), 120_000);
+  }, 3_000);
 
   // ── Relay to the Discord bot: the site's signals (Binance real time…) go straight to Discord.
   const readKey = () => {
@@ -328,7 +351,14 @@ export async function startWeb(): Promise<DemoBackend> {
     async get(path) {
       const u = new URL(path, "https://site.local");
       // Data owned by the 24/7 bot (leveraged markets, long-term statistics, Discord settings).
-      if (u.pathname === "/api/intel/leverage") return (await botGet("/api/discord/leverage")) ?? { at: null, markets: [], context: svc.marketContext(), unavailable: true };
+      if (u.pathname === "/api/intel/leverage") {
+        // The bot's reading is richer (long/short ratio, buy flow, 24/7); the page's own reading fills in
+        // when the bot is not configured or has not answered yet.
+        const bot = await botGet<{ at: number | null; markets: unknown[] }>("/api/discord/leverage");
+        if (bot?.at && bot.markets.length && Date.now() - bot.at < 15 * 60_000) return { ...bot, origin: "bot" };
+        const local = svc.leverage();
+        return { ...local, origin: "site", unavailable: !local.markets.length };
+      }
       if (u.pathname === "/api/intel/performance" && u.searchParams.get("scope") === "bot") {
         const r = await botGet("/api/discord/stats");
         if (!r) throw new Error("statistiques du bot indisponibles (DISCORD_WORKER_URL ?)");

@@ -5,9 +5,32 @@ import { CoinLink } from "@/components/Intel";
 import { Card } from "@/components/ui";
 import { getJson } from "@/lib/api";
 import { fmtPct, pctClass } from "@/lib/format";
-import { fmtAgo, fmtBig, fmtUsd, type LeverageMarketView, type LeverageResponse } from "@/lib/intel";
+import { KIND_LABEL, fmtAgo, fmtBig, fmtUsd, type LeverageMarketView, type LeverageResponse } from "@/lib/intel";
+
+/** "PUMP_EARLY (80)" → "Décollage (80)". */
+const anomalyLabel = (a: string) => a.replace(/^([A-Z0-9_]+) \((\d+)\)$/, (all, k: string, n: string) => (k in KIND_LABEL ? `${KIND_LABEL[k as keyof typeof KIND_LABEL]} (${n})` : all));
 
 type Filter = "all" | "LONG" | "SHORT" | "anomalies";
+
+/** A market "has signals" when it has a LONG / SHORT indication or unusual moves. */
+const hasSignal = (m: LeverageMarketView) => m.bias !== "NEUTRE" || m.anomalies.length > 0;
+const toneOf = (m: LeverageMarketView) => (m.bias === "LONG" ? "long" : m.bias === "SHORT" ? "short" : "anomaly");
+const NEON = {
+  long: { color: "#34d399", glow: "0 0 6px #34d399, 0 0 22px rgba(52,211,153,0.55), inset 0 0 12px rgba(52,211,153,0.15)", text: "0 0 8px rgba(52,211,153,0.9)" },
+  short: { color: "#fb7185", glow: "0 0 6px #fb7185, 0 0 22px rgba(251,113,133,0.55), inset 0 0 12px rgba(251,113,133,0.15)", text: "0 0 8px rgba(251,113,133,0.9)" },
+  anomaly: { color: "#fbbf24", glow: "0 0 6px #fbbf24, 0 0 20px rgba(251,191,36,0.45), inset 0 0 12px rgba(251,191,36,0.12)", text: "0 0 8px rgba(251,191,36,0.9)" },
+} as const;
+
+/** Signaled markets first (strongest score first), then every other market by volume. */
+function ordered(ms: LeverageMarketView[]) {
+  return [...ms].sort((a, b) => {
+    const sa = hasSignal(a) ? 1 : 0;
+    const sb = hasSignal(b) ? 1 : 0;
+    if (sa !== sb) return sb - sa;
+    if (sa) return Math.abs(b.score) - Math.abs(a.score);
+    return (b.volume24hUsd ?? 0) - (a.volume24hUsd ?? 0);
+  });
+}
 
 export default function LevierPage() {
   const [d, setD] = useState<LeverageResponse | null>(null);
@@ -25,11 +48,13 @@ export default function LevierPage() {
         (e: Error) => setErr(e.message),
       );
     void load();
-    const t = setInterval(load, 60_000);
+    const t = setInterval(load, 20_000);
     return () => clearInterval(t);
   }, []);
 
-  const rows = (d?.markets ?? []).filter((m) => (filter === "all" ? true : filter === "anomalies" ? m.anomalies.length > 0 : m.bias === filter));
+  const all = ordered(d?.markets ?? []);
+  const signaled = all.filter(hasSignal);
+  const rows = all.filter((m) => (filter === "all" ? true : filter === "anomalies" ? m.anomalies.length > 0 : m.bias === filter));
   const now = Date.now();
   return (
     <div className="space-y-4">
@@ -53,13 +78,14 @@ export default function LevierPage() {
           ))}
           <span className="ml-auto text-slate-400">
             {d?.markets.length ?? 0} marché(s) perpétuel(s) Coinbase{d?.at ? ` · mis à jour il y a ${fmtAgo(d.at, now)}` : ""}
+            {d?.origin ? ` · lecture ${d.origin === "bot" ? "du bot 24 h/24" : "de cette page"}` : ""}
             {d?.context?.note ? ` · ${d.context.note}` : ""}
           </span>
         </div>
         {err && <p className="mt-2 text-sm text-amber-300">{err}</p>}
         {d?.unavailable && (
           <p className="mt-2 text-sm text-slate-400">
-            Ces données viennent du bot 24 h/24. Ajoute <code>DISCORD_WORKER_URL</code> dans le projet Pages du site (voir la page Sources), puis attends sa prochaine analyse (5 min max).
+            Chargement de la liste des marchés à levier… (la page lit Coinbase elle-même ; le bot 24 h/24 ajoute le ratio long/short et les flux d&apos;achats quand <code>DISCORD_WORKER_URL</code> est configurée).
           </p>
         )}
         <p className="mt-2 text-[11px] text-slate-500">
@@ -67,6 +93,20 @@ export default function LevierPage() {
           disponibles selon ton pays.
         </p>
       </Card>
+      {signaled.length > 0 && (
+        <section>
+          <h2 className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-300">
+            <span className="mr-2 inline-block h-2 w-2 animate-pulse rounded-full bg-emerald-400 align-middle" style={{ boxShadow: "0 0 8px #34d399" }} />
+            Avec signaux ({signaled.length})
+          </h2>
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+            {signaled.map((m) => (
+              <NeonCard key={m.productId} m={m} onOpen={() => setOpen(open === m.productId ? null : m.productId)} />
+            ))}
+          </div>
+        </section>
+      )}
+      <h2 className="text-xs font-semibold uppercase tracking-wider text-slate-400">Tous les marchés ({all.length})</h2>
       <div className="overflow-x-auto rounded border border-slate-800">
         <table className="num w-full text-xs">
           <thead className="bg-slate-900 text-left text-slate-400">
@@ -85,7 +125,7 @@ export default function LevierPage() {
             {d && !rows.length && (
               <tr>
                 <td colSpan={13} className="px-2 py-6 text-center text-slate-500">
-                  {d.markets.length ? "Aucun marché ne correspond au filtre." : "Pas encore de données (le bot lit les marchés à levier toutes les 5 min)."}
+                  {d.markets.length ? "Aucun marché ne correspond au filtre." : "Chargement des marchés à levier Coinbase…"}
                 </td>
               </tr>
             )}
@@ -99,11 +139,16 @@ export default function LevierPage() {
 function Row({ m, open, onToggle }: { m: LeverageMarketView; open: boolean; onToggle: () => void }) {
   const c = m.context;
   const biasCls = m.bias === "LONG" ? "bg-emerald-600/80 text-white" : m.bias === "SHORT" ? "bg-rose-600/80 text-white" : "bg-slate-700 text-slate-200";
+  const neon = hasSignal(m) ? NEON[toneOf(m)] : null;
   return (
     <>
-      <tr className="cursor-pointer border-t border-slate-800/70 hover:bg-slate-800/40" onClick={onToggle}>
-        <td className="whitespace-nowrap px-2 py-1.5">
-          <CoinLink symbol={m.coin} /> <span className="text-slate-500">{m.name}</span>
+      <tr
+        className={`cursor-pointer border-t border-slate-800/70 hover:bg-slate-800/40 ${neon ? "bg-slate-900" : ""}`}
+        style={neon ? { boxShadow: `inset 3px 0 0 ${neon.color}` } : undefined}
+        onClick={onToggle}
+      >
+        <td className="whitespace-nowrap px-2 py-1.5" style={neon ? { textShadow: neon.text, color: neon.color } : undefined}>
+          <CoinLink symbol={m.coin} /> <span className={neon ? "" : "text-slate-500"}>{m.name}</span>
           {m.venue && <span className="ml-1 text-[9px] text-slate-500">{m.venue}</span>}
         </td>
         <td className="px-2 py-1.5 font-bold text-amber-300">{m.maxLeverage ? `×${m.maxLeverage}` : "—"}</td>
@@ -119,7 +164,7 @@ function Row({ m, open, onToggle }: { m: LeverageMarketView; open: boolean; onTo
         </td>
         <td className={`px-2 py-1.5 font-semibold ${m.score > 0 ? "text-emerald-400" : m.score < 0 ? "text-rose-400" : "text-slate-400"}`}>{m.score > 0 ? `+${m.score}` : m.score}</td>
         <td className="px-2 py-1.5 text-rose-300">{m.liquidationMovePct !== null ? `${m.liquidationMovePct} % contre toi` : "—"}</td>
-        <td className="px-2 py-1.5 text-amber-200">{m.anomalies.length ? m.anomalies.slice(0, 2).join(" · ") : "—"}</td>
+        <td className="px-2 py-1.5 text-amber-200">{m.anomalies.length ? m.anomalies.slice(0, 2).map(anomalyLabel).join(" · ") : "—"}</td>
       </tr>
       {open && (
         <tr className="border-t border-slate-800/40 bg-slate-900/60">
@@ -140,5 +185,45 @@ function Row({ m, open, onToggle }: { m: LeverageMarketView; open: boolean; onTo
         </tr>
       )}
     </>
+  );
+}
+
+function NeonCard({ m, onOpen }: { m: LeverageMarketView; onOpen: () => void }) {
+  const n = NEON[toneOf(m)];
+  const c = m.context;
+  const label = m.bias === "NEUTRE" ? "MOUVEMENT ANORMAL" : m.bias;
+  return (
+    <button type="button" onClick={onOpen} className="rounded-lg bg-slate-950 p-3 text-left transition hover:brightness-125" style={{ border: `1px solid ${n.color}`, boxShadow: n.glow }}>
+      <div className="flex items-center gap-2">
+        <span className="text-lg font-bold" style={{ color: n.color, textShadow: n.text }}>
+          {m.coin}
+        </span>
+        <span className="truncate text-xs text-slate-400">{m.name}</span>
+        {m.maxLeverage && <span className="ml-auto text-xs font-bold text-amber-300">×{m.maxLeverage}</span>}
+      </div>
+      <div className="mt-1 flex items-baseline gap-2">
+        <span className="rounded px-2 py-0.5 text-xs font-extrabold tracking-wider" style={{ color: "#0b1020", background: n.color, boxShadow: `0 0 10px ${n.color}` }}>
+          {label}
+        </span>
+        <span className="num text-sm font-semibold" style={{ color: n.color }}>
+          score {m.score > 0 ? `+${m.score}` : m.score}
+        </span>
+        <span className="num ml-auto text-sm text-slate-200">{fmtUsd(m.price)}</span>
+      </div>
+      <div className="num mt-2 grid grid-cols-3 gap-1 text-[11px] text-slate-400">
+        <span>
+          15 min <span className={pctClass(c.change15m)}>{fmtPct(c.change15m)}</span>
+        </span>
+        <span>
+          1 h <span className={pctClass(c.change1h)}>{fmtPct(c.change1h)}</span>
+        </span>
+        <span>
+          24 h <span className={pctClass(m.change24h)}>{fmtPct(m.change24h)}</span>
+        </span>
+      </div>
+      {m.anomalies.length > 0 && <div className="mt-2 truncate text-[11px] text-amber-200">⚠ {m.anomalies.slice(0, 3).map(anomalyLabel).join(" · ")}</div>}
+      {m.reasons[0] && <div className="mt-1 truncate text-[11px] text-slate-400">{m.reasons[0]}</div>}
+      {m.liquidationMovePct !== null && <div className="mt-1 text-[10px] text-rose-300">liquidation au levier max : {m.liquidationMovePct} % contre toi</div>}
+    </button>
   );
 }

@@ -36,6 +36,7 @@ export interface LeverageResponse {
   markets: LeverageMarketView[];
   context: MarketContextView | null;
   unavailable?: boolean;
+  origin?: "bot" | "site";
 }
 export type UniverseRow = CoinRow & { signals24h: number; lastSignal: { kind: IntelKind; direction: Direction; strength: number; ts: number } | null };
 export interface UniverseResponse {
