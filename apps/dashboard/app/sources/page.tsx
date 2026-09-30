@@ -282,13 +282,13 @@ function WebDiscord({ d }: { d: SourcesResponse }) {
       <div className="rounded border border-slate-800 p-3">
         <div className="font-semibold text-slate-200">Relais site → Discord</div>
         <p className="mt-1 text-xs text-slate-400">
-          Quand cette page est ouverte, ses signaux (dont Binance en temps réel) partent tout de suite sur Discord. Il faut le <strong>code de relais</strong> que tu as mis dans le bot (secret <code>RELAY_KEY</code>) ; il n&apos;est gardé que dans ce navigateur.
+          Quand cette page est ouverte, ses signaux (dont Binance en temps réel) partent tout de suite sur Discord. <strong>Le plus simple :</strong> ajoute une fois le secret <code>RELAY_KEY</code> (même valeur que dans le bot) au projet Pages du site ; le relais marche alors tout seul sur tous tes appareils. Sinon, entre le code ci-dessous (gardé dans ce navigateur seulement).
         </p>
         <p className="mt-1 text-xs">
           État :{" "}
-          {d.relay?.keySet ? (
+          {d.relay?.keySet || d.relay?.autoRelay ? (
             <span className={d.relay.lastError ? "text-amber-300" : "text-emerald-400"}>
-              activé · {d.relay.sent} signal(s) transmis au bot
+              activé{d.relay.keySet ? "" : " automatiquement (code gardé par le site)"} · {d.relay.sent} signal(s) transmis au bot
               {d.relay.queued ? ` · ${d.relay.queued} en attente` : " · rien en attente"}
               {d.relay.lastError ? ` · erreur : ${d.relay.lastError} (nouvel essai automatique)` : ""}
             </span>

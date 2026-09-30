@@ -154,3 +154,9 @@ Les signaux sont des **informations statistiques, pas des conseils**. Aucun ordr
 - **Routes protégées par `RELAY_KEY` :** `/relay`, `/prefs` (POST), `/test-channels`. Une mauvaise clé est refusée
   après une pause de 400 ms. Le corps est limité à 64 ko (relais) et 32 ko (réglages), y compris sans
   `Content-Length`.
+
+## Relais automatique (conseillé)
+
+Ajoute aussi `RELAY_KEY` (même valeur) dans les secrets du **projet Pages** du site. Toute page ouverte du site
+relaie alors ses signaux vers Discord sans que tu aies à entrer le code sur chaque appareil. Voir
+`docs/10-courbe-setups-mobile-audit.md`, section 16.

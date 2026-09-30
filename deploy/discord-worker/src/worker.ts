@@ -315,7 +315,15 @@ async function readCapped(req: Request, max: number): Promise<string | null> {
 export type DiscordMark = "sent" | "dup" | "filtered" | "cold" | "nochannel" | `refused:${string}`;
 
 /** Why a relayed signal was refused (counted and shown on the site). */
-export type RelayReject = "format" | "type" | "sens" | "force" | "trop ancien" | "déjà envoyé";
+export type RelayReject = "format" | "type" | "sens" | "force" | "trop ancien" | "déjà envoyé" | "trop de signaux";
+
+/** Links kept in relayed signals: exchanges, data sites and the news feeds the site reads. */
+const RELAY_LINK_HOSTS = /(^|\.)(binance\.com|coinbase\.com|okx\.com|kucoin\.com|mexc\.com|gate\.io|gate\.com|bybit\.com|coingecko\.com|geckoterminal\.com|dexscreener\.com|tradingview\.com|reddit\.com|coindesk\.com|cointelegraph\.com|decrypt\.co|theblock\.co|bitcoinmagazine\.com|cryptoast\.fr|journalducoin\.com)$/i;
+/** Relayed signals accepted per 10 minutes (a flood from a hijacked page cannot drown Discord). */
+export const RELAY_CAP_10MIN = 600;
+
+/** Plain text only: no clickable [text](url) and no bare links inside titles or reasons. */
+const plain = (t: string) => t.replace(/\[([^\]]*)\]\([^)]*\)/g, "$1").replace(/https?:\/\/\S+/gi, "").replace(/[<>]/g, "").replace(/\s{2,}/g, " ").trim();
 
 /**
  * Validate a relayed signal: strict shape, bounded sizes (long texts are cut,
@@ -328,7 +336,7 @@ export function sanitizeRelayed(x: unknown, now: number): IntelSignal | RelayRej
   const str = (v: unknown, max: number) => (typeof v === "string" && v.trim().length > 0 ? v.slice(0, max) : null);
   const id = typeof s.id === "string" && s.id.length > 0 && s.id.length <= 80 ? s.id : null;
   const coin = typeof s.coin === "string" ? s.coin.trim().toUpperCase().slice(0, 24) : "";
-  const title = str(s.title, 256);
+  const title = typeof s.title === "string" ? str(plain(s.title), 256) : null;
   if (!id || !coin || !/^[\p{L}\p{N}._$-]+$/u.test(coin) || !title) return "format";
   if (!KINDS.has(s.kind as IntelKind) || !SOURCES.has(s.source as IntelSource)) return "type";
   if (s.direction !== "bullish" && s.direction !== "bearish" && s.direction !== "neutral") return "sens";
@@ -336,9 +344,16 @@ export function sanitizeRelayed(x: unknown, now: number): IntelSignal | RelayRej
   const ts = Number(s.ts);
   if (!Number.isFinite(strength) || strength < 0 || strength > 100) return "force";
   if (!Number.isFinite(ts) || Math.abs(now - ts) > 45 * 60_000) return "trop ancien";
-  const url = typeof s.url === "string" && /^https:\/\/[^\s]{1,500}$/.test(s.url) ? s.url : null;
+  const url = (() => {
+    if (typeof s.url !== "string" || !/^https:\/\/[^\s]{1,500}$/.test(s.url)) return null;
+    try {
+      return RELAY_LINK_HOSTS.test(new URL(s.url).hostname) ? s.url : null;
+    } catch {
+      return null;
+    }
+  })();
   const priceUsd = typeof s.priceUsd === "number" && Number.isFinite(s.priceUsd) ? s.priceUsd : null;
-  const reasons = Array.isArray(s.reasons) ? s.reasons.filter((r): r is string => typeof r === "string").slice(0, 10).map((r) => r.slice(0, 300)) : [];
+  const reasons = Array.isArray(s.reasons) ? s.reasons.filter((r): r is string => typeof r === "string").slice(0, 10).map((r) => plain(r).slice(0, 300)).filter(Boolean) : [];
   const metrics: Record<string, number | string | null> = {};
   if (s.metrics && typeof s.metrics === "object")
     for (const [k, v] of Object.entries(s.metrics as Record<string, unknown>).slice(0, 25))
@@ -694,6 +709,8 @@ export class RadarState {
 
   /** Outgoing requests left in this run (Cloudflare free plan: 50 per run; a margin is kept). */
   private budget = REQUEST_BUDGET;
+  /** Relayed signals accepted recently (cap per 10 min). */
+  private relayTimes: number[] = [];
   private lastGetError: string | null = null;
 
   private async get(label: string, url: string, silent = false): Promise<string | null> {
@@ -1060,6 +1077,14 @@ export class RadarState {
         if (id) results[id] = `refused:${s}`;
         continue;
       }
+      // Volume cap over 10 min, whatever sends them.
+      this.relayTimes = this.relayTimes.filter((t) => this.clock - t < 10 * 60_000);
+      if (this.relayTimes.length >= RELAY_CAP_10MIN) {
+        reasons["trop de signaux"] = (reasons["trop de signaux"] ?? 0) + 1;
+        if (id) results[id] = "refused:trop de signaux";
+        continue;
+      }
+      this.relayTimes.push(this.clock);
       // The bot computes setups too: a setup it already alerted (same coin, same side, < 12 h) is not repeated.
       if ((s.kind === "SETUP_LONG" || s.kind === "SETUP_SHORT") && !L.svc.claimSetup(s.coin, s.kind === "SETUP_LONG" ? "LONG" : "SHORT", this.clock)) {
         reasons["déjà envoyé"] = (reasons["déjà envoyé"] ?? 0) + 1;

@@ -286,3 +286,17 @@ Le mode est actif par défaut et se règle dans la page Discord, carte « Envoi 
   « Point marché » affiche aussi l'état des sources du bot (Binance ✅ ou ❌ avec le motif, Coinbase, OKX, KuCoin, MEXC).
 - **En dernier recours,** les signaux Binance partent quand le site est ouvert sur un appareil où le code de relais est
   entré : ton navigateur lit Binance directement.
+
+## 16. Relais sans code à taper sur chaque appareil
+
+- **À faire une seule fois.** Dans Cloudflare → Workers & Pages → le projet **Pages** du site → Settings → Variables and
+  Secrets, ajoute le secret `RELAY_KEY` (**même valeur** que dans le bot), puis redéploie le site.
+- **Ensuite, toute page ouverte du site relaie automatiquement** ses signaux (dont Binance en direct) vers Discord.
+  Plus besoin d'entrer le code sur le téléphone, l'ordinateur, etc. Le code tapé à la main marche toujours.
+- **Protections :**
+  - la fonction du site n'ajoute le code que pour les requêtes venues de ses propres pages (`Sec-Fetch-Site` /
+    `Origin`) ;
+  - le bot accepte au plus 600 signaux relayés par 10 min ;
+  - il retire des titres et des raisons le texte cliquable et les liens ;
+  - il ne garde que les liens vers des plateformes et médias connus ;
+  - les réglages Discord et le test des salons exigent toujours le code.

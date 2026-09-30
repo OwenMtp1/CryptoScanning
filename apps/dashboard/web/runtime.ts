@@ -250,8 +250,11 @@ export async function startWeb(): Promise<DemoBackend> {
     for (const s of b.signals) marks.set(s.id, "queued");
     for (const s of b.signals) relayQueue.push({ id: s.id, ts: s.ts, coin: s.coin, coinName: s.coinName, kind: s.kind, direction: s.direction, source: s.source, strength: s.strength, title: s.title, reasons: s.reasons.slice(0, 10), priceUsd: s.priceUsd, url: s.url, metrics: s.metrics });
   });
+  /** The site holds the relay code itself (RELAY_KEY on the Pages project): no code to type on this device. */
+  let autoRelay = false;
+  const canRelay = () => !!readKey() || autoRelay;
   const postRelay = async (signals: unknown[], key = readKey()) => {
-    const r = await fetchText("/api/discord/relay", { method: "POST", headers: { "content-type": "application/json", "x-relay-key": key }, body: JSON.stringify({ signals }), timeoutMs: 20_000 });
+    const r = await fetchText("/api/discord/relay", { method: "POST", headers: { "content-type": "application/json", ...(key ? { "x-relay-key": key } : {}) }, body: JSON.stringify({ signals }), timeoutMs: 20_000 });
     const body = (() => {
       try {
         return JSON.parse(r.text) as { ok?: boolean; error?: string; accepted?: number; rejected?: number; reasons?: Record<string, number>; results?: Record<string, string> };
@@ -266,7 +269,7 @@ export async function startWeb(): Promise<DemoBackend> {
     const now = Date.now();
     relayQueue = relayQueue.filter((x) => now - x.ts < 40 * 60_000).slice(-2000);
     relay.queued = relayQueue.length;
-    if (sending || !relayQueue.length || now < relayPauseUntil || !readKey()) return;
+    if (sending || !relayQueue.length || now < relayPauseUntil || !canRelay()) return;
     sending = true;
     const batch = relayQueue.slice(0, 100);
     try {
@@ -297,7 +300,7 @@ export async function startWeb(): Promise<DemoBackend> {
   /** Discord status of a signal shown on this page. */
   const markOf = (id: string): string | null => {
     const m = marks.get(id);
-    if (m === "queued" && !readKey()) return "nokey";
+    if (m === "queued" && !canRelay()) return "nokey";
     return m ?? null;
   };
   let botStatus: unknown = null;
@@ -309,13 +312,14 @@ export async function startWeb(): Promise<DemoBackend> {
         } catch {
           botStatus = { error: `HTTP ${r.status}` };
         }
+        autoRelay = !!(botStatus as { autoRelay?: boolean }).autoRelay;
         const b = botStatus as { configured?: boolean; error?: string; status?: { lastRunAt?: number; config?: { webhookConfigured?: boolean }; discord?: Record<string, unknown> } };
         const last = b.status?.lastRunAt ?? null;
         const channels = Object.keys(b.status?.discord ?? {}).length;
         if (!b.configured) svc.setSourceState("discord", "waiting", "ajoute DISCORD_WORKER_URL au site pour afficher l'état du bot");
         else if (b.error) svc.setSourceState("discord", "down", b.error);
         else if (!b.status?.config?.webhookConfigured) svc.setSourceState("discord", "degraded", "bot en ligne mais aucun webhook valide configuré");
-        else if (last && Date.now() - last < 3 * 60_000) svc.setSourceState("discord", "ok", `bot actif · ${channels} salon(s) · dernière analyse il y a ${Math.max(1, Math.round((Date.now() - last) / 1000))} s${readKey() ? " · relais du site activé" : ""}`, last);
+        else if (last && Date.now() - last < 3 * 60_000) svc.setSourceState("discord", "ok", `bot actif · ${channels} salon(s) · dernière analyse il y a ${Math.max(1, Math.round((Date.now() - last) / 1000))} s${canRelay() ? ` · relais du site activé${readKey() ? "" : " (automatique)"}` : ""}`, last);
         else svc.setSourceState("discord", "degraded", last ? "le bot n'a pas tourné depuis plus de 3 min" : "le bot n'a pas encore tourné");
       },
       (e: Error) => (botStatus = { error: e.message }),
@@ -554,7 +558,7 @@ export async function startWeb(): Promise<DemoBackend> {
   const ctx = {
     log,
     intel: svc,
-    intelExtras: () => ({ web: true, simulated: false, coingecko: null, binanceFeed: binance.status(), newsFeeds, discordWorker: botStatus, relay: { keySet: !!readKey(), ...relay } }),
+    intelExtras: () => ({ web: true, simulated: false, coingecko: null, binanceFeed: binance.status(), newsFeeds, discordWorker: botStatus, relay: { keySet: !!readKey(), autoRelay, ...relay } }),
     publicConfig: () => ({ mode: "WEB" }),
     startedAt,
   } as unknown as RouteContext;

@@ -548,4 +548,28 @@ describe("Discord worker", () => {
       binanceBlocked = [];
     }
   });
+
+  it("relayed signals are cleaned (no foreign links, no clickable text) and capped per 10 min", async () => {
+    vi.useFakeTimers({ now: Date.UTC(2026, 8, 26, 12, 0), toFake: ["Date"] });
+    posted.length = 0;
+    vi.stubGlobal("fetch", vi.fn(async (u: string, i?: { method?: string; body?: string }) => fakeFetch(u, i)));
+    const obj = new RadarState({ storage: storage() } as never, { RADAR: {} as never, DISCORD_WEBHOOK_URL: WEBHOOK, SITE_URL: SITE, RELAY_KEY: "k" });
+    const relay = async (signals: unknown[]) => (await (await obj.fetch(new Request("https://radar/relay", { method: "POST", headers: { "x-relay-key": "k" }, body: JSON.stringify({ signals }) }))).json()) as { accepted: number; reasons: Record<string, number> };
+    const base = { ts: Date.now(), kind: "PUMP_EARLY", direction: "bullish", source: "binance", strength: 60, priceUsd: 1 };
+    await relay([{ ...base, id: "x1", coin: "AAAX", title: "AAAX décolle [clique ici](https://phishing.example) https://evil.example/x", reasons: ["voir https://evil.example"], url: "https://evil.example/login" }]);
+    const body = posted.map((p) => p.body).join(" ");
+    expect(body).toContain("AAAX décolle clique ici");
+    expect(body).not.toContain("evil.example");
+    expect(body).not.toContain("phishing.example");
+    const many = Array.from({ length: 650 }, (_, i) => ({ ...base, id: `m${i}`, coin: `C${i}Q`, title: `C${i}Q décolle`, reasons: [], url: "https://www.binance.com/en/trade/X" }));
+    let accepted = 0;
+    let capped = 0;
+    for (let i = 0; i < many.length; i += 100) {
+      const r = await relay(many.slice(i, i + 100));
+      accepted += r.accepted;
+      capped += r.reasons["trop de signaux"] ?? 0;
+    }
+    expect(accepted).toBe(599); // 600 per 10 min, one already used
+    expect(capped).toBe(51);
+  });
 });

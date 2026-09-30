@@ -120,7 +120,7 @@ export interface SourcesResponse {
       message?: string;
     };
   } | null;
-  relay?: { keySet: boolean; sent: number; rejected: number; queued: number; rejectReasons: Record<string, number>; lastOkAt: number | null; lastError: string | null };
+  relay?: { keySet: boolean; autoRelay?: boolean; sent: number; rejected: number; queued: number; rejectReasons: Record<string, number>; lastOkAt: number | null; lastError: string | null };
 }
 
 

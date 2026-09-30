@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // @ts-expect-error plain JS modules deployed as Cloudflare Pages Functions
 import { onRequestGet as cg } from "../../../deploy/cloudflare/functions/api/cg/[[path]].js";
 // @ts-expect-error plain JS
+import { onRequestPost as relayFn } from "../../../deploy/cloudflare/functions/api/discord/relay.js";
+// @ts-expect-error plain JS
 import { onRequestGet as candles } from "../../../deploy/cloudflare/functions/api/candles.js";
 // @ts-expect-error plain JS
 import { onRequestGet as newsList } from "../../../deploy/cloudflare/functions/api/news/index.js";
@@ -98,5 +100,24 @@ describe("Cloudflare function /api/candles", () => {
       expect((await call(candles, `https://x/api/candles?${q}`, {})).status).toBe(400);
     }
     expect(upstream).toHaveLength(0);
+  });
+});
+
+describe("Cloudflare function /api/discord/relay", () => {
+  const post = (headers: Record<string, string>, env: Record<string, string>) =>
+    relayFn({ request: new Request("https://site.pages.dev/api/discord/relay", { method: "POST", headers, body: '{"signals":[]}' }), env, params: {}, waitUntil: () => {} });
+  const env = { DISCORD_WORKER_URL: "https://bot.example.workers.dev", RELAY_KEY: "site-secret" };
+  it("adds the site's relay code for its own pages only (no code to type on each device)", async () => {
+    expect((await post({ "sec-fetch-site": "same-origin" }, env)).status).toBe(200);
+    expect(upstream[0]!.headers["x-relay-key"]).toBe("site-secret");
+    expect((await post({ "sec-fetch-site": "cross-site" }, env)).status).toBe(403);
+    expect((await post({ origin: "https://evil.example" }, env)).status).toBe(403);
+    expect((await post({}, env)).status).toBe(403);
+    expect(upstream).toHaveLength(1);
+    // Without the site secret: the typed code is still required.
+    expect((await post({ "sec-fetch-site": "same-origin" }, { DISCORD_WORKER_URL: env.DISCORD_WORKER_URL })).status).toBe(401);
+    // A typed code is passed through as is.
+    await post({ "x-relay-key": "typed" }, env);
+    expect(upstream[1]!.headers["x-relay-key"]).toBe("typed");
   });
 });
