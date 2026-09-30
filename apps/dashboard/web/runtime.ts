@@ -16,7 +16,9 @@ import { BinanceFeed } from "../../server/src/intel/binance-feed";
 import { CallBudget } from "../../server/src/intel/budget";
 import { CoinGeckoFeed } from "../../server/src/intel/coingecko-feed";
 import { fetchText, type FetchText } from "../../server/src/intel/http";
-import { IntelService, type IntelSavedState } from "../../server/src/intel/intel-service";
+import { IntelService, type IntelSavedState, type SetupView } from "../../server/src/intel/intel-service";
+import { loadCandles, type CandleInterval } from "../../server/src/intel/candles";
+import { runSetup } from "../../server/src/intel/setup-scanner";
 import type { DemoBackend } from "../lib/api";
 import { BrowserEventLog } from "../demo/event-log";
 
@@ -55,7 +57,7 @@ export async function startWeb(): Promise<DemoBackend> {
   const cfg = IntelConfigSchema.parse({ coingecko: { universeSize: 750 } });
   const log = new BrowserEventLog([], 1500);
   const emit = (e: Parameters<BrowserEventLog["emit"]>[0]) => void log.emit(e);
-  const svc = new IntelService({ cfg, log: emit, notifier: null, enabledSources: ["binance", "coinbase", "coingecko", "trending", "derivatives", "dex", "news", "social", "leverage", "discord"] });
+  const svc = new IntelService({ cfg, log: emit, notifier: null, enabledSources: ["binance", "coinbase", "coingecko", "trending", "derivatives", "dex", "news", "social", "leverage", "setup", "discord"] });
   const saved = load();
   svc.restore(saved);
 
@@ -209,7 +211,7 @@ export async function startWeb(): Promise<DemoBackend> {
   // EVERY signal shown on the site goes into the queue — even before the relay code is entered:
   // the backlog (up to 40 min) is sent as soon as the code is activated.
   svc.subscribe((b) => {
-    for (const s of b.signals) relayQueue.push({ id: s.id, ts: s.ts, coin: s.coin, coinName: s.coinName, kind: s.kind, direction: s.direction, source: s.source, strength: s.strength, title: s.title, reasons: s.reasons.slice(0, 10), priceUsd: s.priceUsd, url: s.url });
+    for (const s of b.signals) relayQueue.push({ id: s.id, ts: s.ts, coin: s.coin, coinName: s.coinName, kind: s.kind, direction: s.direction, source: s.source, strength: s.strength, title: s.title, reasons: s.reasons.slice(0, 10), priceUsd: s.priceUsd, url: s.url, metrics: s.metrics });
   });
   const postRelay = async (signals: unknown[], key = readKey()) => {
     const r = await fetchText("/api/discord/relay", { method: "POST", headers: { "content-type": "application/json", "x-relay-key": key }, body: JSON.stringify({ signals }), timeoutMs: 20_000 });
@@ -342,6 +344,58 @@ export async function startWeb(): Promise<DemoBackend> {
   void pullBotSignals();
   setInterval(() => void pullBotSignals(), 30_000);
 
+  // ── Trader setups: one coin every 8 s (1 h candles straight from Binance / Coinbase, from this browser).
+  const directGet = async (url: string) => {
+    const r = await fetchText(url, { timeoutMs: 12_000 });
+    if (r.status !== 200) throw new Error(`HTTP ${r.status}`);
+    return r.text;
+  };
+  const btc = { trend: null as number | null, at: 0 };
+  let setupTurn = 0;
+  let setupBusy = false;
+  const setupTick = async () => {
+    if (setupBusy) return;
+    setupBusy = true;
+    try {
+      const refreshBtc = Date.now() - btc.at > 15 * 60_000;
+      const coins = svc.setupUniverse(60);
+      const coin = refreshBtc ? "BTC" : coins[setupTurn++ % Math.max(1, coins.length)];
+      if (!coin) return;
+      const r = await runSetup(directGet, svc, coin, { btcTrend: btc.trend });
+      if (coin === "BTC") Object.assign(btc, { trend: r.trend, at: Date.now() });
+    } catch {
+      // coin without candles on Binance / Coinbase: next one
+    } finally {
+      setupBusy = false;
+    }
+  };
+  // Fast first pass (one coin every 3 s until 60 are known), then one every 10 s.
+  const setupLoop = () => {
+    void setupTick().finally(() => setTimeout(setupLoop, svc.setups().count < 60 ? 3_000 : 10_000));
+  };
+  setTimeout(setupLoop, 8_000);
+  // The bot's setups (it analyses around the clock) complete this page's own.
+  const botSetups: { data: { setups: SetupView[] } | null; at: number } = { data: null, at: 0 };
+  const mergedSetups = async (bias?: string) => {
+    if (Date.now() - botSetups.at > 60_000) {
+      botSetups.at = Date.now();
+      botSetups.data = await botGet<{ setups: SetupView[] }>("/api/discord/setups");
+    }
+    const mine = svc.setups({ bias });
+    const byCoin = new Map<string, SetupView & { origin: string }>();
+    for (const x of botSetups.data?.setups ?? []) if (!bias || x.setup.bias === bias) byCoin.set(x.coin, { ...x, origin: "bot" });
+    for (const x of mine.setups) {
+      const b = byCoin.get(x.coin);
+      if (!b || x.at >= b.at) byCoin.set(x.coin, { ...x, origin: "site" });
+    }
+    const list = [...byCoin.values()]
+      .filter((x) => Date.now() - x.at < 3 * 3_600_000)
+      .sort((a, b) => (a.setup.bias === "WAIT" ? 1 : 0) - (b.setup.bias === "WAIT" ? 1 : 0) || b.setup.confidence - a.setup.confidence);
+    return { at: list.length ? Math.max(...list.map((x) => x.at)) : null, count: list.length, setups: list, btcTrend: btc.trend };
+  };
+  // Chart ranges → candle interval and count.
+  const RANGES: Record<string, [CandleInterval, number]> = { "1h": ["1m", 60], "1d": ["5m", 288], "1w": ["1h", 168], "1m": ["4h", 180], "1y": ["1d", 365] };
+
   const save = () => {
     const st = svc.exportState({ cgLastRun: cg.lastRuns() });
     let keep = 4000;
@@ -391,6 +445,19 @@ export async function startWeb(): Promise<DemoBackend> {
         if (levCache.data) return levCache.data;
         await refreshLeverage();
         return levCache.data ?? { at: null, markets: [], context: svc.marketContext(), origin: "site", unavailable: true };
+      }
+      if (u.pathname === "/api/intel/setups") return mergedSetups(u.searchParams.get("bias") ?? undefined);
+      if (u.pathname === "/api/web/candles") {
+        const coin = (u.searchParams.get("coin") ?? "").toUpperCase();
+        const range = RANGES[u.searchParams.get("range") ?? "1d"];
+        if (!/^[A-Z0-9]{1,20}$/.test(coin) || !range) throw new Error("paramètres invalides");
+        return loadCandles(directGet, coin, range[0], range[1]);
+      }
+      if (u.pathname === "/api/web/setup") {
+        const coin = (u.searchParams.get("coin") ?? "").toUpperCase();
+        if (!/^[A-Z0-9]{1,20}$/.test(coin)) throw new Error("crypto invalide");
+        const r = await runSetup(directGet, svc, coin, { btcTrend: coin === "BTC" ? null : btc.trend, emit: false });
+        return { coin, setup: r.setup, source: r.source, context: svc.setupContext(coin) };
       }
       if (u.pathname === "/api/intel/performance" && u.searchParams.get("scope") === "bot") {
         const r = await botGet("/api/discord/stats");

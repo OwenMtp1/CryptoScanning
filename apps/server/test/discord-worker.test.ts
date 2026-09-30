@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { RadarState, passesPrefs, sanitizePrefs, defaultPrefs } from "../../../deploy/discord-worker/src/worker.js";
+import worker, { RadarState, passesPrefs, sanitizePrefs, defaultPrefs } from "../../../deploy/discord-worker/src/worker.js";
 
 const WEBHOOK = "https://discord.com/api/webhooks/123/tok_EN-secret";
 const SITE = "https://crypto-radar.pages.dev";
@@ -13,15 +13,42 @@ let price = 1;
 let extraProducts: unknown[] = [];
 let btc1h = 0;
 let perps: unknown[] = [];
+let klines1h: unknown[][] | null = null;
+/** 300 hourly Binance klines of a steady uptrend with pullbacks. */
+const uptrend = () => {
+  const out: unknown[][] = [];
+  let p = 100;
+  const t0 = Date.now() - 300 * 3_600_000;
+  for (let i = 0; i < 300; i++) {
+    const o = p;
+    p = p * (1 + 0.003 + Math.sin(i / 5) * 0.004);
+    out.push([t0 + i * 3_600_000, String(o), String(Math.max(o, p) * 1.003), String(Math.min(o, p) * 0.997), String(p), "1000"]);
+  }
+  return out;
+};
 const posted: { body: string }[] = [];
 const product = (id: string, p: number) => ({ product_id: id, price: String(p), price_percentage_change_24h: "1", volume_24h: "5000000", base_currency_id: id.split("-")[0], quote_currency_id: id.split("-")[1], status: "online", trading_disabled: false, is_disabled: false, product_type: "SPOT", approximate_quote_24h_volume: "50000000" });
 const res = (body: string, status = 200) => new Response(body, { status, headers: { "content-type": "application/json" } });
 
+/** One complete cycle of the bot = 3 runs 20 s apart (the slow sources are split in 3 steps). */
+async function scan3(make: () => RadarState): Promise<Record<string, any>> {
+  let last: Record<string, any> = {};
+  for (let i = 0; i < 3; i++) {
+    last = (await (await make().fetch(new Request("https://radar/scan"))).json()) as Record<string, any>;
+    vi.setSystemTime(Date.now() + 20_000);
+  }
+  return last;
+}
+
 function fakeFetch(url: string, init?: { method?: string; body?: string }) {
+  if (url.startsWith("https://www.okx.com/")) return res(JSON.stringify({ code: "0", data: [{ instId: "ZZZ-USDT", last: "1", open24h: "1", high24h: "1", low24h: "1", volCcy24h: "1000" }] }));
+  if (url.startsWith("https://api.kucoin.com/")) return res(JSON.stringify({ code: "200000", data: { ticker: [{ symbol: "ZZZ-USDT", last: "1", high: "1", low: "1", volValue: "1000", changeRate: "0" }] } }));
+  if (url.startsWith("https://api.mexc.com/")) return res(JSON.stringify([{ symbol: "ZZZUSDT", lastPrice: "1", openPrice: "1", highPrice: "1", lowPrice: "1", quoteVolume: "1000" }]));
   if (url.startsWith("https://discord.com/")) {
     posted.push({ body: init?.body ?? "" });
     return res("{}");
   }
+  if (url.startsWith("https://data-api.binance.vision/api/v3/klines") && url.includes("interval=1h") && klines1h) return res(JSON.stringify(klines1h));
   if (url.startsWith("https://data-api.binance.vision/")) return res(JSON.stringify([{ symbol: "WIFUSDT", openPrice: "1", highPrice: "2", lowPrice: "0.5", lastPrice: String(price), volume: "1", quoteVolume: "90000000", openTime: 0, closeTime: Date.now() }]));
   if (url.includes("product_type=FUTURE")) return res(JSON.stringify({ products: perps }));
   if (url.startsWith("https://api.coinbase.com/")) return res(JSON.stringify({ products: [product("PEPE-USD", price), product("BTC-USD", 100_000), product("BTC-EUR", 90_000), ...extraProducts] }));
@@ -46,7 +73,7 @@ describe("Discord worker", () => {
     vi.stubGlobal("fetch", vi.fn(async (u: string, i?: { method?: string; body?: string }) => fakeFetch(u, i)));
     const st = storage();
     const env = { RADAR: {} as never, DISCORD_WEBHOOK_URL: WEBHOOK, SITE_URL: `${SITE}/` };
-    const run = async () => (await (await new RadarState({ storage: st } as never, env).fetch(new Request("https://radar/scan"))).json()) as Record<string, any>;
+    const run = () => scan3(() => new RadarState({ storage: st } as never, env));
 
     const s1 = await run();
     expect(posted).toHaveLength(1);
@@ -89,7 +116,7 @@ describe("Discord worker", () => {
     }));
     const st = storage();
     const env = { RADAR: {} as never, DISCORD_WEBHOOK_BULLISH: "https://discord.com/api/webhooks/1/up", DISCORD_WEBHOOK_BEARISH: "https://discord.com/api/webhooks/2/down", SITE_URL: SITE };
-    const run = () => new RadarState({ storage: st } as never, env).fetch(new Request("https://radar/scan"));
+    const run = () => scan3(() => new RadarState({ storage: st } as never, env));
     price = 1;
     await run();
     expect(byHook["1"]![0]).toContain("haussiers");
@@ -110,7 +137,7 @@ describe("Discord worker", () => {
     const env = { RADAR: {} as never, DISCORD_WEBHOOK_URL: WEBHOOK, SITE_URL: SITE, RELAY_KEY: "s3cret-code" };
     const obj = new RadarState({ storage: st } as never, env);
     price = 1;
-    await obj.fetch(new Request("https://radar/scan")); // warm-up + welcome
+    await scan3(() => obj); // warm-up + welcome
     expect(posted).toHaveLength(1);
     const sig = { id: "b1", ts: Date.now(), coin: "SOLX", kind: "PUMP_EARLY", direction: "bullish", source: "binance", strength: 88, title: "SOLX décolle : +9 % en 5 min", reasons: ["r"], priceUsd: 1.2, url: "https://www.binance.com/en/trade/SOLX_USDT" };
     const relay = (key: string, signals: unknown[]) => obj.fetch(new Request("https://radar/relay", { method: "POST", headers: { "x-relay-key": key }, body: JSON.stringify({ signals }) }));
@@ -153,10 +180,10 @@ describe("Discord worker", () => {
     expect(view.kinds).toContain("LEVERAGE_LONG");
     // Warm-up, then a pump: filtered out (only NEW_LISTING allowed) → only the welcome message.
     price = 1;
-    await obj.fetch(new Request("https://radar/scan"));
+    await scan3(() => obj);
     vi.setSystemTime(Date.now() + 5 * 60_000);
     price = 1.1;
-    const s2 = (await (await obj.fetch(new Request("https://radar/scan"))).json()) as { filteredByPrefs: number };
+    const s2 = (await scan3(() => obj)) as { filteredByPrefs: number };
     expect(posted).toHaveLength(1);
     expect(s2.filteredByPrefs).toBeGreaterThan(0);
   });
@@ -170,7 +197,7 @@ describe("Discord worker", () => {
     }));
     const st = storage();
     const env = { RADAR: {} as never, DISCORD_WEBHOOK_URL: "https://discord.com/api/webhooks/10/g", DISCORD_WEBHOOK_LEVERAGE: "https://discord.com/api/webhooks/20/lev", SITE_URL: SITE };
-    const run = () => new RadarState({ storage: st } as never, env).fetch(new Request("https://radar/scan"));
+    const run = () => scan3(() => new RadarState({ storage: st } as never, env));
     price = 1;
     extraProducts = [];
     perps = [{ product_id: "BTC-PERP-INTX", price: "100000", status: "online", approximate_quote_24h_volume: "5e9", future_product_details: { contract_root_unit: "BTC", contract_expiry_type: "PERPETUAL", contract_display_name: "BTC PERP", perpetual_details: { max_leverage: "20", funding_rate: "0.001", open_interest: "100" } } }];
@@ -207,7 +234,7 @@ describe("Discord worker", () => {
     const env = { RADAR: {} as never, DISCORD_WEBHOOK_BULLISH: "https://discord.com/api/webhooks/1/up", DISCORD_WEBHOOK_BEARISH: "https://discord.com/api/webhooks/2/down", SITE_URL: SITE, RELAY_KEY: "k-123456789012345" };
     const obj = new RadarState({ storage: st } as never, env);
     price = 1;
-    await obj.fetch(new Request("https://radar/scan"));
+    await scan3(() => obj);
     const base = { ts: Date.now(), coinName: null, source: "dex", strength: 40, reasons: [], priceUsd: null, url: null };
     const r = (await (
       await obj.fetch(
@@ -237,7 +264,7 @@ describe("Discord worker", () => {
     const env = { RADAR: {} as never, DISCORD_WEBHOOK_BULLISH: "https://discord.com/api/webhooks/1/up", DISCORD_WEBHOOK_BEARISH: "https://discord.com/api/webhooks/2/down", DISCORD_WEBHOOK_NEUTRAL: "https://discord.com/api/webhooks/3/mid", SITE_URL: SITE, RELAY_KEY: "k-123456789012345" };
     const obj = new RadarState({ storage: st } as never, env);
     price = 1;
-    await obj.fetch(new Request("https://radar/scan"));
+    await scan3(() => obj);
     expect(byHook["3"]![0]).toContain("signaux **neutres**");
     const sig = { ts: Date.now(), coinName: null, source: "binance", strength: 50, reasons: [], priceUsd: null, url: null, kind: "VOLUME_SURGE", coin: "SOLX" };
     await obj.fetch(new Request("https://radar/relay", { method: "POST", headers: { "x-relay-key": "k-123456789012345" }, body: JSON.stringify({ signals: [{ ...sig, id: "n1", direction: "neutral", title: "SOLX volume x6" }] }) }));
@@ -255,7 +282,7 @@ describe("Discord worker", () => {
     }));
     const st = storage();
     const env = { RADAR: {} as never, DISCORD_WEBHOOK_NEUTRAL: "https://discord.com/api/webhooks/3/mid", DISCORD_WEBHOOK_LEVERAGE: "https://discord.com/api/webhooks/4/lev", SITE_URL: SITE, RELAY_KEY: "k-123456789012345" };
-    const run = () => new RadarState({ storage: st } as never, env).fetch(new Request("https://radar/scan"));
+    const run = () => scan3(() => new RadarState({ storage: st } as never, env));
     // funding 0.1 % + 3.2 longs per short = −27: SHORT already on the first (silent) pass.
     perps = [{ product_id: "BTC-PERP-INTX", price: "100000", status: "online", approximate_quote_24h_volume: "5e9", future_product_details: { contract_root_unit: "BTC", contract_expiry_type: "PERPETUAL", contract_display_name: "BTC PERP", perpetual_details: { max_leverage: "20", funding_rate: "0.001", open_interest: "100" } } }];
     price = 1;
@@ -277,6 +304,38 @@ describe("Discord worker", () => {
     perps = [];
   });
 
+  it("never more than 50 outgoing requests per run, even with a burst of alerts: the rest leaves on the next runs", async () => {
+    vi.useFakeTimers({ now: Date.UTC(2026, 8, 18, 12, 0), toFake: ["Date"] });
+    const perRun: number[] = [];
+    let calls = 0;
+    let discord = 0;
+    vi.stubGlobal("fetch", vi.fn(async (u: string, i?: { method?: string; body?: string }) => {
+      calls++;
+      if (u.startsWith("https://discord.com/")) discord += (JSON.parse(i?.body ?? "{}").embeds ?? []).filter((e: { title: string }) => /C\d+X/.test(e.title)).length;
+      return fakeFetch(u, i);
+    }));
+    const st = storage();
+    const env = { RADAR: {} as never, DISCORD_WEBHOOK_URL: WEBHOOK, SITE_URL: SITE };
+    const obj = new RadarState({ storage: st } as never, env);
+    price = 1;
+    extraProducts = Array.from({ length: 80 }, (_, i) => product(`C${i}X-USD`, 1));
+    const once = async () => {
+      calls = 0;
+      await obj.fetch(new Request("https://radar/scan"));
+      perRun.push(calls);
+      vi.setSystemTime(Date.now() + 20_000);
+    };
+    for (let i = 0; i < 3; i++) await once(); // warm-up cycle
+    vi.setSystemTime(Date.now() + 5 * 60_000);
+    // 80 coins pump at once on Coinbase → 80+ alerts
+    extraProducts = Array.from({ length: 80 }, (_, i) => product(`C${i}X-USD`, 1.1));
+    const before = discord;
+    for (let i = 0; i < 8; i++) await once();
+    expect(Math.max(...perRun)).toBeLessThanOrEqual(50);
+    expect(discord - before).toBeGreaterThanOrEqual(80); // every signal sent (grouped by 5 during the burst to stay within Discord limits)
+    extraProducts = [];
+  });
+
   it("prefs helpers", () => {
     const s = { id: "x", ts: 0, coin: "SOL", coinName: null, kind: "PUMP_EARLY" as const, direction: "bullish" as const, source: "binance" as const, strength: 60, title: "t", reasons: [], metrics: {}, priceUsd: 1, url: null };
     expect(passesPrefs(defaultPrefs(), s, null)).toBe(true);
@@ -293,5 +352,50 @@ describe("Discord worker", () => {
     const s = (await (await new RadarState({ storage: st } as never, { RADAR: {} as never }).fetch(new Request("https://radar/scan"))).json()) as { errors: string[]; config: { webhookConfigured: boolean } };
     expect(s.errors.join()).toContain("SITE_URL non configurée");
     expect(s.config.webhookConfigured).toBe(false);
+  });
+
+  it("computes trader setups 24/7 and alerts a LONG setup once, with its full plan", async () => {
+    vi.useFakeTimers({ now: Date.UTC(2026, 8, 20, 12, 0), toFake: ["Date"] });
+    posted.length = 0;
+    const calls: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (u: string, i?: { method?: string; body?: string }) => {
+      calls.push(u);
+      return fakeFetch(u, i);
+    }));
+    klines1h = uptrend();
+    try {
+      const st = storage();
+      const env = { RADAR: {} as never, DISCORD_WEBHOOK_URL: WEBHOOK, SITE_URL: SITE };
+      const run = () => scan3(() => new RadarState({ storage: st } as never, env));
+      price = 1;
+      await run(); // warm-up: analysed, not alerted
+      const before = posted.length;
+      await run();
+      const setups = posted.slice(before).map((p) => JSON.parse(p.body).embeds?.[0]?.title as string).filter((t) => /setup LONG/.test(t ?? ""));
+      expect(setups.length).toBeGreaterThan(0);
+      expect(setups[0]).toMatch(/entrée .* stop .* objectifs/);
+      // Same setup on the next cycles: not repeated.
+      const n = posted.length;
+      await run();
+      expect(posted.slice(n).some((p) => /setup LONG/.test(p.body))).toBe(false);
+      const board = (await (await new RadarState({ storage: st } as never, env).fetch(new Request("https://radar/setups"))).json()) as { count: number; setups: { coin: string; setup: { bias: string } }[] };
+      expect(board.count).toBeGreaterThan(0);
+      expect(board.setups[0]!.setup.bias).toBe("LONG");
+      expect(calls.some((u) => u.includes("interval=1h"))).toBe(true);
+    } finally {
+      klines1h = null;
+    }
+  });
+
+  it("refuses oversized relay / settings bodies even without a Content-Length", async () => {
+    const big = new ReadableStream({
+      start(c) {
+        for (let i = 0; i < 70; i++) c.enqueue(new TextEncoder().encode("x".repeat(1000)));
+        c.close();
+      },
+    });
+    const env = { RADAR: { idFromName: () => { throw new Error("must not reach the bot"); } } as never };
+    const r = await worker.fetch(new Request("https://bot/relay", { method: "POST", body: big, duplex: "half" } as RequestInit), env as never);
+    expect(r.status).toBe(413);
   });
 });

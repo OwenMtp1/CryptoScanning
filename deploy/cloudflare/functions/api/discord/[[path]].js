@@ -1,11 +1,11 @@
 /**
- * /api/discord/{stats,signals,leverage,prefs} → the Discord worker (DISCORD_WORKER_URL).
+ * /api/discord/{stats,signals,leverage,setups,prefs} → the Discord worker (DISCORD_WORKER_URL).
  * GET is public data (no secret inside). POST /prefs needs the relay code
  * (x-relay-key), checked by the worker against its RELAY_KEY secret.
  */
 import { json } from "../../../lib/proxy.js";
 
-const GET_PATHS = new Set(["stats", "signals", "leverage", "prefs"]);
+const GET_PATHS = new Set(["stats", "signals", "leverage", "prefs", "setups"]);
 
 function base(ctx) {
   const b = (ctx.env.DISCORD_WORKER_URL || "").trim().replace(/\/+$/, "");

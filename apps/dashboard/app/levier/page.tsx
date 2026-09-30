@@ -5,7 +5,7 @@ import { CoinLink } from "@/components/Intel";
 import { Card } from "@/components/ui";
 import { getJson } from "@/lib/api";
 import { fmtPct, pctClass } from "@/lib/format";
-import { KIND_LABEL, fmtAgo, fmtBig, fmtUsd, type LeverageMarketView, type LeverageResponse } from "@/lib/intel";
+import { KIND_LABEL, safeHref, fmtAgo, fmtBig, fmtUsd, type LeverageMarketView, type LeverageResponse } from "@/lib/intel";
 
 /** "PUMP_EARLY (80)" → "Décollage (80)". */
 const anomalyLabel = (a: string) => a.replace(/^([A-Z0-9_]+) \((\d+)\)$/, (all, k: string, n: string) => (k in KIND_LABEL ? `${KIND_LABEL[k as keyof typeof KIND_LABEL]} (${n})` : all));
@@ -200,7 +200,7 @@ function Row({ m, open, onToggle }: { m: LeverageMarketView; open: boolean; onTo
               <span>Volume 24 h {fmtBig(m.volume24hUsd)}</span>
               <span>Open interest {m.openInterest ?? "—"}</span>
               {c.oiChangePct !== null && <span>Variation OI {fmtPct(c.oiChangePct, 1)}</span>}
-              <a href={m.url} target="_blank" rel="noopener noreferrer" className="text-sky-400 hover:underline">
+              <a href={safeHref(m.url)} target="_blank" rel="noopener noreferrer" className="text-sky-400 hover:underline">
                 voir le marché ↗
               </a>
             </div>

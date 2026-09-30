@@ -36,3 +36,5 @@ export * from "./intel/coinbase-live.js";
 export * from "./intel/binance-rest.js";
 export * from "./intel/social.js";
 export * from "./intel/leverage.js";
+export * from "./intel/exchanges.js";
+export * from "./intel/setup.js";

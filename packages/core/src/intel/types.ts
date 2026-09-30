@@ -1,6 +1,6 @@
 /** Multi-source crypto intelligence: signals, news and the coin universe. */
 
-export type IntelSource = "coinbase" | "binance" | "coingecko" | "trending" | "derivatives" | "dex" | "news" | "social" | "leverage";
+export type IntelSource = "coinbase" | "binance" | "exchanges" | "coingecko" | "trending" | "derivatives" | "dex" | "news" | "social" | "leverage" | "setup";
 export type Direction = "bullish" | "bearish" | "neutral";
 
 export type IntelKind =
@@ -37,6 +37,9 @@ export type IntelKind =
   // Leveraged markets: long / short setup
   | "LEVERAGE_LONG"
   | "LEVERAGE_SHORT"
+  // Trader-style setup (trend, momentum, levels, positioning, risk/reward)
+  | "SETUP_LONG"
+  | "SETUP_SHORT"
   // Several independent sources agree
   | "CONFLUENCE";
 

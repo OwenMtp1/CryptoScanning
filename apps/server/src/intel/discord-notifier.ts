@@ -173,16 +173,23 @@ export class DiscordNotifier {
   }
 
   /** Build messages and send what the rate limits allow. Exposed for tests. */
-  async pump() {
+  /**
+   * Build and send messages. `maxPosts` bounds the HTTP calls of this call (a Cloudflare Worker has a
+   * budget of outgoing requests per run): what is left stays queued for the next call. Returns the
+   * number of HTTP calls made.
+   */
+  async pump(maxPosts = Number.POSITIVE_INFINITY): Promise<number> {
     const now = this.now();
-    if (!this.url || this.sending) return;
+    if (!this.url || this.sending) return 0;
     this.buildUrgent(now);
     this.buildDigest(now);
-    if (now < this.pausedUntil) return;
+    if (now < this.pausedUntil) return 0;
     this.sending = true;
+    let posts = 0;
     try {
-      while (this.queue.length && this.sentLastHour(this.now()) < this.o.cfg.maxMessagesPerHour) {
+      while (this.queue.length && posts < maxPosts && this.sentLastHour(this.now()) < this.o.cfg.maxMessagesPerHour) {
         const msg = this.queue[0] as DiscordMessage;
+        posts++;
         const r = await this.post(msg);
         if (r === "retry") break;
         this.queue.shift();
@@ -194,6 +201,7 @@ export class DiscordNotifier {
     } finally {
       this.sending = false;
     }
+    return posts;
   }
 
   private async post(msg: DiscordMessage): Promise<"ok" | "retry" | "drop"> {
@@ -228,7 +236,7 @@ export class DiscordNotifier {
       return "drop";
     } catch (err) {
       this.pausedUntil = this.now() + 30_000;
-      this.lastError = `envoi Discord impossible : ${(err as Error).message}`;
+      this.lastError = `envoi Discord impossible : ${(err as Error).message.replace(/https?:\/\/\S+/g, "[url]")}`;
       this.o.log({ type: "DISCORD_ERROR", level: "warn", success: false, message: this.lastError });
       return "retry";
     }

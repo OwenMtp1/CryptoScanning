@@ -1,5 +1,6 @@
 // Builds the standalone demo: one HTML file (inline JS + CSS), React from cdnjs.
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { createHash } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
@@ -53,10 +54,16 @@ const cssInput = `${readFileSync(path.join(dashboard, "app/globals.css"), "utf8"
 @source "../app";`;
 const css = await postcss([tailwind({ base: dashboard, optimize: { minify: true } })]).process(cssInput, { from: path.join(dashboard, "app/globals.css") });
 
-const REACT = "https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js";
-const REACT_DOM = "https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js";
+// The live site serves its own copy of React (official npm files, public/vendor) with an integrity
+// check; the standalone demo file keeps cdnjs.
+const publicDir = path.resolve(dashboard, "../../deploy/cloudflare/public");
+const sri = (text, algo = "sha384") => `${algo}-${createHash(algo).update(text).digest("base64")}`;
+const vendor = (f) => ({ src: `/vendor/${f}`, integrity: sri(readFileSync(path.join(publicDir, "vendor", f))) });
+const REACT = WEB ? vendor("react-18.3.1.production.min.js") : { src: "https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js" };
+const REACT_DOM = WEB ? vendor("react-dom-18.3.1.production.min.js") : { src: "https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js" };
+const tag = (x) => `<script src="${x.src}"${x.integrity ? ` integrity="${x.integrity}"` : ""}></script>`;
 const head = WEB
-  ? `<!doctype html><html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>Crypto Radar — live</title><link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><circle cx='8' cy='8' r='7' fill='%2322c55e'/></svg>"></head><body>`
+  ? `<!doctype html><html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#070b14"><meta name="color-scheme" content="dark"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"><meta name="apple-mobile-web-app-title" content="Crypto Radar"><meta name="format-detection" content="telephone=no"><meta name="robots" content="noindex"><title>Crypto Radar — live</title><link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><circle cx='8' cy='8' r='7' fill='%2322c55e'/></svg>"></head><body>`
   : `<title>Crypto Radar</title>`;
 const html = `${head}
 <style>${css.css}
@@ -64,9 +71,15 @@ html,body{background:#070b14;color:#e2e8f0}
 #boot{font:14px ui-sans-serif,system-ui,sans-serif;color:#94a3b8;padding:48px 16px;text-align:center}
 </style>
 <div id="root"><div id="boot">${WEB ? "Connexion au marché…" : "Démarrage du moteur de la démo…"}</div></div>
-<script src="${REACT}"></script>
-<script src="${REACT_DOM}"></script>
+${tag(REACT)}
+${tag(REACT_DOM)}
 <script>${bundle}</script>
 ${WEB ? "</body></html>" : ""}`;
 writeFileSync(outFile, html);
+if (WEB) {
+  // Strict CSP: only our own scripts plus the exact inline bundle (by hash) may run.
+  const headersFile = path.join(publicDir, "_headers");
+  const h = readFileSync(headersFile, "utf8").replace(/script-src [^;]*;/, `script-src 'self' '${sri(bundle, "sha256")}';`);
+  writeFileSync(headersFile, h);
+}
 console.log(`${WEB ? "web" : "demo"}: ${(html.length / 1024).toFixed(0)} KiB → ${outFile}`);

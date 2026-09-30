@@ -1,6 +1,8 @@
 # Secrets — ne jamais committer
 .env
 .env.*
+.dev.vars
+.dev.vars.*
 !.env.example
 *.pem
 *.key

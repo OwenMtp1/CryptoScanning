@@ -37,11 +37,16 @@ import {
   type Product,
   type Candidate,
   type Direction,
+  type ExchangeId,
+  EXCHANGE_NAME,
+  EXCHANGE_TICKER_URLS,
+  parseExchangeTickers,
 } from "../../../packages/core/src/index";
 import { DiscordNotifier } from "../../../apps/server/src/intel/discord-notifier";
 import { fetchText } from "../../../apps/server/src/intel/http";
 import { loadPerpMarkets } from "../../../apps/server/src/intel/perp-sources";
 import { IntelService, type IntelSavedState } from "../../../apps/server/src/intel/intel-service";
+import { runSetup } from "../../../apps/server/src/intel/setup-scanner";
 
 interface Env {
   RADAR: { idFromName(n: string): unknown; get(id: unknown, opts?: { locationHint?: string }): { fetch(url: string, init?: RequestInit): Promise<Response> } };
@@ -70,13 +75,38 @@ interface DOState {
 }
 
 const FAST_MS = 20_000;
+/** Cloudflare free plan: 50 outgoing requests per run. Kept: 2 of margin. */
+const REQUEST_BUDGET = 48;
+/** Requests always kept for Discord messages in a run. */
+const DISCORD_RESERVE = 18;
+const EXCHANGES: ExchangeId[] = ["okx", "kucoin", "mexc"];
 /** Name of the live instance. An older instance (e.g. before the move to Europe) stops its own loop. */
 const ACTIVE = "eu-1";
 const FULL_MS = 5 * 60_000;
-export const ALL_KINDS: IntelKind[] = ["PUMP_EARLY", "DUMP_EARLY", "VOLUME_SURGE", "BREAKOUT_24H_HIGH", "BREAKDOWN_24H_LOW", "TOP_MOVER_1H", "CRASH_1H", "VOLUME_MCAP_ANOMALY", "NEAR_ATH", "TRENDING_ENTRY", "FUNDING_EXTREME_LONG", "FUNDING_EXTREME_SHORT", "OPEN_INTEREST_SURGE", "DEX_NEW_POOL_TRACTION", "DEX_TRENDING_PUMP", "DEX_RUG_RISK", "NEWS_BULLISH", "NEWS_BEARISH", "NEW_LISTING", "LIQUIDATIONS_LONG", "LIQUIDATIONS_SHORT", "SOCIAL_BUZZ", "LEVERAGE_LONG", "LEVERAGE_SHORT", "CONFLUENCE"];
-export const ALL_SOURCES: IntelSource[] = ["coinbase", "binance", "coingecko", "trending", "derivatives", "dex", "news", "social", "leverage"];
+export const ALL_KINDS: IntelKind[] = ["PUMP_EARLY", "DUMP_EARLY", "VOLUME_SURGE", "BREAKOUT_24H_HIGH", "BREAKDOWN_24H_LOW", "TOP_MOVER_1H", "CRASH_1H", "VOLUME_MCAP_ANOMALY", "NEAR_ATH", "TRENDING_ENTRY", "FUNDING_EXTREME_LONG", "FUNDING_EXTREME_SHORT", "OPEN_INTEREST_SURGE", "DEX_NEW_POOL_TRACTION", "DEX_TRENDING_PUMP", "DEX_RUG_RISK", "NEWS_BULLISH", "NEWS_BEARISH", "NEW_LISTING", "LIQUIDATIONS_LONG", "LIQUIDATIONS_SHORT", "SOCIAL_BUZZ", "LEVERAGE_LONG", "LEVERAGE_SHORT", "SETUP_LONG", "SETUP_SHORT", "CONFLUENCE"];
+export const ALL_SOURCES: IntelSource[] = ["coinbase", "binance", "exchanges", "coingecko", "trending", "derivatives", "dex", "news", "social", "leverage", "setup"];
 const KINDS = new Set<IntelKind>(ALL_KINDS);
 const SOURCES = new Set<IntelSource>(ALL_SOURCES);
+/** Leverage settings: indications (LONG / SHORT) and liquidations have their own rules. */
+export function passesLeverage(l: LeveragePrefs, s: IntelSignal): boolean {
+  if (!l.enabled) return false;
+  if (l.includeCoins.length && !l.includeCoins.includes(s.coin)) return false;
+  if (l.excludeCoins.includes(s.coin)) return false;
+  if (s.kind === "LIQUIDATIONS_LONG" || s.kind === "LIQUIDATIONS_SHORT") {
+    if (!l.liquidations) return false;
+    const usd = Number(s.metrics.liquidatedUsd5m);
+    return !Number.isFinite(usd) || usd >= l.minLiquidationUsd;
+  }
+  const bias = s.kind === "LEVERAGE_LONG" ? "LONG" : "SHORT";
+  if (!l.biases.includes(bias)) return false;
+  const score = Math.abs(Number(s.metrics.score));
+  if (Number.isFinite(score) && score < l.minScore) return false;
+  const lev = Number(s.metrics.maxLeverage);
+  if (l.minMaxLeverage > 0 && !(Number.isFinite(lev) && lev >= l.minMaxLeverage)) return false;
+  if (l.venues.length && !l.venues.includes(String(s.metrics.venue ?? ""))) return false;
+  return true;
+}
+
 /** Kinds that go to the leverage channel when it exists. */
 const LEVERAGE_KINDS = new Set<IntelKind>(["LEVERAGE_LONG", "LEVERAGE_SHORT", "LIQUIDATIONS_LONG", "LIQUIDATIONS_SHORT"]);
 const LISTING_QUOTES = ["USDT", "USDC", "FDUSD"];
@@ -95,11 +125,37 @@ export interface DiscordPrefs {
   excludeCoins: string[];
   /** Minimum measured 1 h reliability of the signal type (%), or null. Types not measured yet always pass. */
   minHitRate: number | null;
+  /** Leveraged markets (LONG / SHORT indications and liquidations). */
+  leverage: LeveragePrefs;
   updatedAt: number | null;
 }
 
+export interface LeveragePrefs {
+  enabled: boolean;
+  /** |score| from which a LONG / SHORT indication is sent (the page shows it from 25). */
+  minScore: number;
+  biases: ("LONG" | "SHORT")[];
+  /** Only markets offering at least this leverage (0 = all, including unknown). */
+  minMaxLeverage: number;
+  /** Only these venues (empty = all): "Coinbase International", "INTX", "Binance Futures"… */
+  venues: string[];
+  includeCoins: string[];
+  excludeCoins: string[];
+  /** Re-send when the score grows by this many points (0 = never). */
+  strengthenStep: number;
+  /** Re-send an unchanged indication after this many hours (0 = never). */
+  remindHours: number;
+  liquidations: boolean;
+  /** Minimum liquidated amount in 5 min (USD) for a liquidation alert. */
+  minLiquidationUsd: number;
+}
+
+export function defaultLeveragePrefs(): LeveragePrefs {
+  return { enabled: true, minScore: 25, biases: ["LONG", "SHORT"], minMaxLeverage: 0, venues: [], includeCoins: [], excludeCoins: [], strengthenStep: 15, remindHours: 0, liquidations: true, minLiquidationUsd: 500_000 };
+}
+
 export function defaultPrefs(minStrength = 0): DiscordPrefs {
-  return { enabled: true, minStrength, kinds: [], sources: [], directions: ["bullish", "bearish", "neutral"], includeCoins: [], excludeCoins: [], minHitRate: null, updatedAt: null };
+  return { enabled: true, minStrength, kinds: [], sources: [], directions: ["bullish", "bearish", "neutral"], includeCoins: [], excludeCoins: [], minHitRate: null, leverage: defaultLeveragePrefs(), updatedAt: null };
 }
 
 /** Validate prefs sent by the site (strict, bounded). */
@@ -113,7 +169,28 @@ export function sanitizePrefs(x: unknown, now: number): DiscordPrefs | null {
   if (!Number.isFinite(ms) || ms < 0 || ms > 100) return null;
   if (hr !== null && (!Number.isFinite(hr) || hr < 0 || hr > 100)) return null;
   const dirs = list(o.directions, (d) => d === "bullish" || d === "bearish" || d === "neutral") as Direction[];
+  const lv = (o.leverage && typeof o.leverage === "object" ? o.leverage : {}) as Record<string, unknown>;
+  const d = defaultLeveragePrefs();
+  const bounded = (v: unknown, lo: number, hi: number, def: number) => {
+    const x = Number(v);
+    return v === undefined || v === null || v === "" || !Number.isFinite(x) ? def : Math.max(lo, Math.min(hi, x));
+  };
+  const biases = list(lv.biases, (b) => b === "LONG" || b === "SHORT") as LeveragePrefs["biases"];
+  const leverage: LeveragePrefs = {
+    enabled: lv.enabled !== false,
+    minScore: Math.round(bounded(lv.minScore, 5, 100, d.minScore)),
+    biases: Array.isArray(lv.biases) ? biases : d.biases,
+    minMaxLeverage: Math.round(bounded(lv.minMaxLeverage, 0, 200, d.minMaxLeverage)),
+    venues: list(lv.venues, (v) => v.length <= 40, 10),
+    includeCoins: list((lv.includeCoins as unknown[] | undefined)?.map((c) => String(c).trim().toUpperCase()), coin, 200),
+    excludeCoins: list((lv.excludeCoins as unknown[] | undefined)?.map((c) => String(c).trim().toUpperCase()), coin, 200),
+    strengthenStep: Math.round(bounded(lv.strengthenStep, 0, 100, d.strengthenStep)),
+    remindHours: bounded(lv.remindHours, 0, 72, d.remindHours),
+    liquidations: lv.liquidations !== false,
+    minLiquidationUsd: Math.round(bounded(lv.minLiquidationUsd, 0, 1e9, d.minLiquidationUsd)),
+  };
   return {
+    leverage,
     enabled: o.enabled !== false,
     minStrength: Math.round(ms),
     kinds: list(o.kinds, (k) => KINDS.has(k as IntelKind)),
@@ -128,6 +205,7 @@ export function sanitizePrefs(x: unknown, now: number): DiscordPrefs | null {
 
 export function passesPrefs(p: DiscordPrefs, s: IntelSignal, hitRate: number | null): boolean {
   if (!p.enabled) return false;
+  if (LEVERAGE_KINDS.has(s.kind)) return passesLeverage(p.leverage ?? defaultLeveragePrefs(), s);
   if (s.strength < p.minStrength) return false;
   if (p.kinds.length && !p.kinds.includes(s.kind)) return false;
   if (p.sources.length && !p.sources.includes(s.source)) return false;
@@ -163,14 +241,43 @@ interface Status {
 
 /** Constant-time string comparison (relay key). */
 function sameSecret(a: string, b: string): boolean {
-  if (a.length !== b.length) return false;
-  let d = 0;
-  for (let i = 0; i < a.length; i++) d |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  // Constant time, and the length of the secret is not revealed either.
+  let d = a.length ^ b.length;
+  const n = Math.max(a.length, b.length);
+  for (let i = 0; i < n; i++) d |= (a.charCodeAt(i) || 0) ^ (b.charCodeAt(i) || 0);
   return d === 0;
 }
 
+/** Wrong relay code: answer after a short pause (slows down guessing). */
+const denied = async () => {
+  await new Promise((r) => setTimeout(r, 400));
+  return Response.json({ ok: false, error: "code de relais incorrect" }, { status: 401 });
+};
+
+/** Read a request body without trusting Content-Length (chunked bodies are capped too). */
+async function readCapped(req: Request, max: number): Promise<string | null> {
+  if (!req.body) return "";
+  const reader = req.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > max) {
+      await reader.cancel().catch(() => {});
+      return null;
+    }
+    chunks.push(value);
+  }
+  const all = new Uint8Array(size);
+  let o = 0;
+  for (const c of chunks) (all.set(c, o), (o += c.byteLength));
+  return new TextDecoder().decode(all);
+}
+
 /** Why a relayed signal was refused (counted and shown on the site). */
-export type RelayReject = "format" | "type" | "sens" | "force" | "trop ancien";
+export type RelayReject = "format" | "type" | "sens" | "force" | "trop ancien" | "déjà envoyé";
 
 /**
  * Validate a relayed signal: strict shape, bounded sizes (long texts are cut,
@@ -194,7 +301,11 @@ export function sanitizeRelayed(x: unknown, now: number): IntelSignal | RelayRej
   const url = typeof s.url === "string" && /^https:\/\/[^\s]{1,500}$/.test(s.url) ? s.url : null;
   const priceUsd = typeof s.priceUsd === "number" && Number.isFinite(s.priceUsd) ? s.priceUsd : null;
   const reasons = Array.isArray(s.reasons) ? s.reasons.filter((r): r is string => typeof r === "string").slice(0, 10).map((r) => r.slice(0, 300)) : [];
-  return { id: `site-${id}`, ts, coin, coinName: str(s.coinName, 80), kind: s.kind as IntelKind, direction: s.direction, source: s.source as IntelSource, strength: Math.round(strength), title, reasons, metrics: {}, priceUsd, url };
+  const metrics: Record<string, number | string | null> = {};
+  if (s.metrics && typeof s.metrics === "object")
+    for (const [k, v] of Object.entries(s.metrics as Record<string, unknown>).slice(0, 25))
+      if (/^[A-Za-z0-9_]{1,40}$/.test(k) && ((typeof v === "number" && Number.isFinite(v)) || (typeof v === "string" && v.length <= 80) || v === null)) metrics[k] = v as number | string | null;
+  return { id: `site-${id}`, ts, coin, coinName: str(s.coinName, 80), kind: s.kind as IntelKind, direction: s.direction, source: s.source as IntelSource, strength: Math.round(strength), title, reasons, metrics, priceUsd, url };
 }
 
 export class RadarState {
@@ -213,6 +324,13 @@ export class RadarState {
     recentSent: { ts: number; dir: Direction; kind: IntelKind; coin: string; channel: string }[];
     listings: { cb: Set<string>; cbCoins: Set<string>; bn: Set<string>; seededCb: boolean; seededBn: boolean };
     lsBackoffUntil: number;
+    stage: number;
+    lastCycleAt: number | null;
+    exchangeTurn: number;
+    setupTurn: number;
+    btcTrend: { value: number | null; at: number };
+    exchangeBackoff: Partial<Record<ExchangeId, number>>;
+    exchangeHist: Partial<Record<ExchangeId, BinanceRestHistory>>;
     flow: Map<string, number>;
     filtered: number;
     channels: Channel[];
@@ -245,7 +363,7 @@ export class RadarState {
     if (path === "/relay") {
       const key = this.env.RELAY_KEY?.trim();
       if (!key) return Response.json({ ok: false, error: "RELAY_KEY non configurée sur le worker" }, { status: 503 });
-      if (!sameSecret(req.headers.get("x-relay-key") ?? "", key)) return Response.json({ ok: false, error: "code de relais incorrect" }, { status: 401 });
+      if (!sameSecret(req.headers.get("x-relay-key") ?? "", key)) return denied();
       let body: unknown;
       try {
         body = await req.json();
@@ -258,7 +376,7 @@ export class RadarState {
       if (req.method === "POST") {
         const key = this.env.RELAY_KEY?.trim();
         if (!key) return Response.json({ ok: false, error: "RELAY_KEY non configurée sur le worker" }, { status: 503 });
-        if (!sameSecret(req.headers.get("x-relay-key") ?? "", key)) return Response.json({ ok: false, error: "code de relais incorrect" }, { status: 401 });
+        if (!sameSecret(req.headers.get("x-relay-key") ?? "", key)) return denied();
         const p = sanitizePrefs(await req.json().catch(() => null), Date.now());
         if (!p) return Response.json({ ok: false, error: "réglages invalides" }, { status: 400 });
         return Response.json(
@@ -276,7 +394,7 @@ export class RadarState {
     if (path === "/test-channels" && req.method === "POST") {
       const key = this.env.RELAY_KEY?.trim();
       if (!key) return Response.json({ ok: false, error: "RELAY_KEY non configurée sur le worker" }, { status: 503 });
-      if (!sameSecret(req.headers.get("x-relay-key") ?? "", key)) return Response.json({ ok: false, error: "code de relais incorrect" }, { status: 401 });
+      if (!sameSecret(req.headers.get("x-relay-key") ?? "", key)) return denied();
       return Response.json(
         await this.run(async () => {
           const L = await this.load();
@@ -305,6 +423,7 @@ export class RadarState {
       const L = await this.run(() => this.load());
       return Response.json({ signals: L.svc.engine.recentSignals({ since, limit: 400 }).map((x) => ({ ...x, hitRate1h: L.svc.hitRateOf(x) })) });
     }
+    if (path === "/setups") return Response.json((await this.state.storage.get("setupBoard")) ?? { at: null, count: 0, setups: [] });
     if (path === "/leverage") return Response.json((await this.state.storage.get("leverageBoard")) ?? { at: null, markets: [], context: null });
     return Response.json((await this.state.storage.get<Status>("status")) ?? { message: "Aucune analyse pour l'instant : la première a lieu dans les 5 minutes suivant le déploiement." });
   }
@@ -334,7 +453,7 @@ export class RadarState {
         ...(role && /^\d+$/.test(role) ? { mentionRoleId: role } : {}),
       },
     });
-    const meta = (await st.get<{ warm?: boolean; welcomed?: string[]; lastFullRunAt?: number; relay?: { received: number; lastAt: number | null; rejected?: number }; sentLog?: number[]; seen?: Record<string, number> }>("meta")) ?? {};
+    const meta = (await st.get<{ warm?: boolean; welcomed?: string[]; lastFullRunAt?: number; relay?: { received: number; lastAt: number | null; rejected?: number }; sentLog?: number[]; seen?: Record<string, number>; stage?: number; lastCycleAt?: number | null; exchangeTurn?: number; setupTurn?: number }>("meta")) ?? {};
 
     // Channel routing: one webhook per direction when configured, the general webhook for the rest,
     // and an optional leverage channel that takes the leveraged-market kinds.
@@ -370,12 +489,19 @@ export class RadarState {
       binanceBackoffUntil: 0,
       coinbaseBackoffUntil: 0,
       seen: new Map(Object.entries(meta.seen ?? {})),
-      prefs: (await st.get<DiscordPrefs>("prefs")) ?? defaultPrefs(cfg.discord.minStrength),
+      prefs: { ...defaultPrefs(cfg.discord.minStrength), ...((await st.get<Partial<DiscordPrefs>>("prefs")) ?? {}), leverage: { ...defaultLeveragePrefs(), ...((await st.get<Partial<DiscordPrefs>>("prefs"))?.leverage ?? {}) } },
       recentSent: (await st.get<{ ts: number; dir: Direction; kind: IntelKind; coin: string; channel: string }[]>("recentSent")) ?? [],
       listings: (() => {
         return { cb: new Set<string>(), cbCoins: new Set<string>(), bn: new Set<string>(), seededCb: false, seededBn: false };
       })(),
       lsBackoffUntil: 0,
+      stage: meta.stage ?? 0,
+      lastCycleAt: meta.lastCycleAt ?? meta.lastFullRunAt ?? null,
+      exchangeTurn: meta.exchangeTurn ?? 0,
+      setupTurn: meta.setupTurn ?? 0,
+      btcTrend: { value: null, at: 0 },
+      exchangeBackoff: {} as Partial<Record<ExchangeId, number>>,
+      exchangeHist: {} as Partial<Record<ExchangeId, BinanceRestHistory>>,
       flow: new Map<string, number>(),
       filtered: 0,
       warm: !!meta.warm,
@@ -396,7 +522,7 @@ export class RadarState {
         },
         view: () => channels[0]?.n.view() ?? null,
       },
-      enabledSources: ["binance", "coinbase", "coingecko", "trending", "derivatives", "dex", "news", "social", "leverage"],
+      enabledSources: ["binance", "coinbase", "exchanges", "coingecko", "trending", "derivatives", "dex", "news", "social", "leverage", "setup"],
       now: () => this.clock,
     });
     loaded.svc.restore(await st.get<IntelSavedState>("intel"));
@@ -422,7 +548,8 @@ export class RadarState {
   private dispatch(s: IntelSignal) {
     const L = this.loaded;
     if (!L) return;
-    const key = `${s.coin}:${s.kind}:${s.direction}`;
+    // Per source: Binance and Coinbase seeing the same move are both sent; the same source twice is not.
+    const key = `${s.coin}:${s.kind}:${s.direction}:${s.source}`;
     const last = L.seen.get(key);
     if (last !== undefined && this.clock - last < 30 * 60_000) return;
     L.seen.set(key, this.clock);
@@ -494,13 +621,25 @@ export class RadarState {
     return q ? symbol.slice(0, -q.length) : symbol;
   }
 
-  private async get(label: string, url: string): Promise<string | null> {
+  /** Outgoing requests left in this run (Cloudflare free plan: 50 per run; a margin is kept). */
+  private budget = REQUEST_BUDGET;
+  private lastGetError: string | null = null;
+
+  private async get(label: string, url: string, silent = false): Promise<string | null> {
+    // Keep room for Discord: data requests stop when only the Discord reserve is left.
+    if (this.budget <= DISCORD_RESERVE) {
+      this.lastGetError = "reporté (limite de requêtes de ce passage)";
+      if (!silent) this.errors.push(`${label} : ${this.lastGetError}`);
+      return null;
+    }
+    this.budget--;
     try {
       const r = await fetchText(url, { timeoutMs: 25_000, headers: { accept: "application/json, application/xml;q=0.9, */*;q=0.5" } });
       if (r.status !== 200) throw new Error(`HTTP ${r.status}${r.headers.get("x-upstream-status") ? ` (amont ${r.headers.get("x-upstream-status")})` : ""}`);
       return r.text;
     } catch (err) {
-      this.errors.push(`${label} : ${(err as Error).message}`);
+      this.lastGetError = (err as Error).message;
+      if (!silent) this.errors.push(`${label} : ${this.lastGetError}`);
       return null;
     }
   }
@@ -511,11 +650,11 @@ export class RadarState {
     const now = t0;
     this.errors = [];
     this.signalsThisRun = 0;
+    this.budget = REQUEST_BUDGET;
     const L = await this.load();
     const svc = L.svc;
     const sources: Record<string, string> = {};
     const site = (this.env.SITE_URL ?? "").trim().replace(/\/+$/, "");
-    const full = L.lastFullRunAt === null || now - L.lastFullRunAt >= FULL_MS - 10_000;
     const arr = <T>(text: string | null, schema: { safeParse(x: unknown): { success: boolean; data?: T } }): T[] => {
       if (!text) return [];
       const raw = JSON.parse(text) as unknown;
@@ -527,8 +666,16 @@ export class RadarState {
         : [];
     };
 
-    // 1. (full) CoinGecko markets first: names for news matching, USD prices.
-    if (full) {
+    // ── The slow sources (every 5 min) are split into 3 steps, one per run, to stay under the
+    // Cloudflare limit of 50 outgoing requests per run (Discord messages included).
+    if (L.stage === 0 && (L.lastCycleAt === null || now - L.lastCycleAt >= FULL_MS - 10_000)) {
+      L.stage = 1;
+      L.lastCycleAt = now;
+    }
+    const stage = L.stage;
+
+    // Step 1: CoinGecko markets (names for news matching, USD prices), trending, derivatives, DEX.
+    if (stage === 1) {
       if (site) {
         let n = 0;
         for (let page = 1; page <= 3; page++) {
@@ -537,10 +684,30 @@ export class RadarState {
           if (rows.length) svc.onMarkets(rows, page, now);
         }
         sources.coingecko = `${n} cryptos`;
-      } else this.errors.push("SITE_URL non configurée : CoinGecko et actualités ignorés (seuls Binance et Coinbase sont analysés)");
+        const tr = await this.get("Tendances", `${site}/api/cg/search/trending`);
+        if (tr) {
+          const t = CgTrendingSchema.safeParse(JSON.parse(tr));
+          if (t.success) {
+            svc.onTrending(t.data.coins.map((c, i) => ({ id: c.item.id, symbol: c.item.symbol, name: c.item.name, rank: i, marketCapRank: c.item.market_cap_rank })), now);
+            sources.trending = `${t.data.coins.length}`;
+          }
+        }
+        const derText = await this.get("Dérivés", `${site}/api/cg/derivatives/exchanges/binance_futures`);
+        const derDoc = derText ? CgDerivativeExchangeSchema.safeParse(JSON.parse(derText)) : null;
+        const der = derDoc?.success ? derivativeRowsFromExchange(derDoc.data) : [];
+        if (der.length) {
+          svc.onDerivatives(der, now);
+          sources.derivatives = `${der.length} contrats`;
+        }
+        for (const [label, path, isNew] of [["DEX tendances", "trending_pools", false], ["DEX nouveaux", "new_pools", true]] as const) {
+          const text = await this.get(label, `${site}/api/cg/onchain/networks/${path}`);
+          const doc = text ? GtPoolsSchema.safeParse(JSON.parse(text)) : null;
+          if (doc?.success) svc.onPools(doc.data, isNew, now);
+        }
+      } else this.errors.push("SITE_URL non configurée : CoinGecko et actualités ignorés (seuls les prix des plateformes sont analysés)");
     }
 
-    // 2. (every run) Binance: every pair, 5 / 15 min moves and 24 h breakouts (weight 80 / call).
+    // Every run: Binance (all pairs), 5 / 15 min moves and 24 h breakouts (weight 80 / call).
     if (now >= L.binanceBackoffUntil) {
       const text = await this.get("Binance", "https://data-api.binance.vision/api/v3/ticker/24hr?type=MINI&symbolStatus=TRADING");
       if (text) {
@@ -551,7 +718,7 @@ export class RadarState {
             .preview(tickers, now)
             .filter((x) => Math.abs(x.change5m ?? 0) >= L.cfg.binance.pumpPct5m * 0.5 || Math.abs(x.change15m ?? 0) >= L.cfg.binance.pumpPct15m * 0.5)
             .sort((a, b) => Math.abs(b.change5m ?? 0) - Math.abs(a.change5m ?? 0))
-            .slice(0, 8);
+            .slice(0, 4);
           for (const m of movers) {
             const k = await this.get(`Flux ${m.pair}`, `https://data-api.binance.vision/api/v3/klines?symbol=${m.pair}&interval=1m&limit=5`);
             if (!k) continue;
@@ -570,12 +737,13 @@ export class RadarState {
           sources.binance = `${L.binance.pick(tickers, now).length} cryptos`;
         }
       } else if (this.errors.some((e) => /^Binance : HTTP (451|403)/.test(e))) {
-        // Binance refuses this server's location: try again in 30 min, Coinbase covers meanwhile.
+        // Binance refuses this server's location: try again in 30 min; Coinbase and the other exchanges cover meanwhile.
         L.binanceBackoffUntil = now + 30 * 60_000;
+        sources.binance = "refusé par Binance (HTTP 451/403) : les autres plateformes prennent le relais";
       } else L.binanceBackoffUntil = now + 60_000;
     } else sources.binance = `en pause jusqu'à ${new Date(L.binanceBackoffUntil).toISOString().slice(11, 16)} UTC (refus précédent)`;
 
-    // 3. (every run) Coinbase: every listed crypto (one call), for coins Binance does not have.
+    // Every run: Coinbase (every listed crypto, one call).
     if (now >= L.coinbaseBackoffUntil) {
       const text = await this.get("Coinbase", "https://api.coinbase.com/api/v3/brokerage/market/products?product_type=SPOT");
       if (text) {
@@ -589,50 +757,52 @@ export class RadarState {
       } else L.coinbaseBackoffUntil = now + (this.errors.some((e) => e.startsWith("Coinbase : HTTP 429")) ? 90_000 : 40_000);
     }
 
-    if (full && site) {
-      // 3. Trending, derivatives, DEX (served from the site's cache).
-      const tr = await this.get("Tendances", `${site}/api/cg/search/trending`);
-      if (tr) {
-        const t = CgTrendingSchema.safeParse(JSON.parse(tr));
-        if (t.success) {
-          svc.onTrending(t.data.coins.map((c, i) => ({ id: c.item.id, symbol: c.item.symbol, name: c.item.name, rank: i, marketCapRank: c.item.market_cap_rank })), now);
-          sources.trending = `${t.data.coins.length}`;
-        }
+    // Every run: one other exchange in turn (OKX, KuCoin, MEXC → each every minute).
+    {
+      const ex = EXCHANGES[L.exchangeTurn % EXCHANGES.length] as ExchangeId;
+      L.exchangeTurn++;
+      if (now >= (L.exchangeBackoff[ex] ?? 0)) {
+        const text = await this.get(EXCHANGE_NAME[ex], EXCHANGE_TICKER_URLS[ex]);
+        if (text) {
+          try {
+            const tickers = parseExchangeTickers(ex, JSON.parse(text), now);
+            if (tickers.length) {
+              svc.onExchangeTickers(ex, tickers, (L.exchangeHist[ex] ??= new BinanceRestHistory(["USDT"])), now);
+              sources[ex] = `${tickers.length} paires`;
+            } else this.errors.push(`${EXCHANGE_NAME[ex]} : réponse vide`);
+          } catch {
+            this.errors.push(`${EXCHANGE_NAME[ex]} : réponse illisible`);
+          }
+        } else L.exchangeBackoff[ex] = now + 10 * 60_000;
       }
-      const derText = await this.get("Dérivés", `${site}/api/cg/derivatives/exchanges/binance_futures`);
-      const derDoc = derText ? CgDerivativeExchangeSchema.safeParse(JSON.parse(derText)) : null;
-      const der = derDoc?.success ? derivativeRowsFromExchange(derDoc.data) : [];
-      if (der.length) {
-        svc.onDerivatives(der, now);
-        sources.derivatives = `${der.length} contrats`;
-      }
-      for (const [label, path, isNew] of [["DEX tendances", "trending_pools", false], ["DEX nouveaux", "new_pools", true]] as const) {
-        const text = await this.get(label, `${site}/api/cg/onchain/networks/${path}`);
-        const doc = text ? GtPoolsSchema.safeParse(JSON.parse(text)) : null;
-        if (doc?.success) svc.onPools(doc.data, isNew, now);
-      }
-      // 4. News.
+    }
+
+    // Step 2: news and Reddit (through the site's cache).
+    if (stage === 2 && site) {
       const list = await this.get("Actualités", `${site}/api/news`);
       let items = 0;
       if (list) {
-        for (const f of (JSON.parse(list) as { feeds: { id: string; name: string }[] }).feeds) {
+        for (const f of (JSON.parse(list) as { feeds: { id: string; name: string; kind?: string }[] }).feeds) {
           const xml = await this.get(`Actu ${f.name}`, `${site}/api/news/${encodeURIComponent(f.id)}`);
           const parsed = xml ? parseFeed(xml) : [];
           items += parsed.length;
           if (!parsed.length) continue;
-          if ((f as { kind?: string }).kind === "social") svc.onSocial(f.name, parsed, now);
+          if (f.kind === "social") svc.onSocial(f.name, parsed, now);
           else svc.onNews(f.name, parsed, now);
         }
       }
       sources.news = `${items} articles`;
     }
-    if (full) {
-      // 5. Leveraged markets: Coinbase perpetual contracts (+ Binance long/short ratio for the biggest).
+
+    // Step 3: leveraged markets (Coinbase, Coinbase International…) + Binance long/short ratio.
+    if (stage === 3) {
       const perpLoad = await loadPerpMarkets(async (url) => {
-        const r = await fetchText(url, { timeoutMs: 20_000, headers: { accept: "application/json" } });
-        if (r.status !== 200) throw new Error(`HTTP ${r.status}`);
-        return r.text;
+        const t = await this.get("Marchés à levier", url, true);
+        if (t === null) throw new Error(this.lastGetError ?? "indisponible");
+        return t;
       }, () => svc.perpsFromDerivatives());
+      // The loader reports its own failures: do not count them twice.
+      this.errors = this.errors.filter((e) => !e.startsWith("Marchés à levier :"));
       svc.setPerpDiagnostics(perpLoad.sources, perpLoad.errors, now);
       if (!perpLoad.markets.length) this.errors.push(`Marchés à levier : ${perpLoad.errors.join(" · ")}`);
       if (perpLoad.markets.length) {
@@ -640,7 +810,7 @@ export class RadarState {
         const extras = new Map<string, { takerBuyRatio?: number | null; longShortRatio?: number | null }>();
         for (const m of markets) extras.set(m.coin, { takerBuyRatio: L.flow.get(m.coin) ?? null });
         if (now >= L.lsBackoffUntil) {
-          const top = [...new Set(markets.sort((a, b) => (b.volume24hUsd ?? 0) - (a.volume24hUsd ?? 0)).map((m) => m.coin))].slice(0, 15);
+          const top = [...new Set(markets.sort((a, b) => (b.volume24hUsd ?? 0) - (a.volume24hUsd ?? 0)).map((m) => m.coin))].slice(0, 10);
           for (const coin of top) {
             const t = await this.get(`Long/short ${coin}`, `https://fapi.binance.com/futures/data/globalLongShortAccountRatio?symbol=${coin}USDT&period=5m&limit=1`);
             if (!t) {
@@ -661,16 +831,51 @@ export class RadarState {
           // A missing futures listing (400) is normal for small coins: keep only real problems visible.
           this.errors = this.errors.filter((e) => !/^Long\/short .* HTTP (400|404)/.test(e));
         }
+        svc.setLeverageAlertRules(L.prefs.leverage);
         svc.onPerps(markets, extras, now, L.warm);
-        sources.leverage = `${markets.length} marchés perpétuels`;
+        sources.leverage = `${markets.length} marchés (${perpLoad.sources.join(", ")})`;
       }
+    }
+
+    // Every run: trader setups on a few coins in turn (1 request each), with what is left of the budget.
+    {
+      const coins = svc.setupUniverse(60);
+      let done = 0;
+      const refreshBtc = now - L.btcTrend.at > 15 * 60_000;
+      const queue = refreshBtc ? ["BTC"] : [];
+      while (queue.length < 4 && coins.length) queue.push(coins[L.setupTurn++ % coins.length] as string);
+      for (const coin of [...new Set(queue)]) {
+        if (this.budget <= DISCORD_RESERVE + 3) break;
+        try {
+          const r = await runSetup(
+            async (url) => {
+              const t = await this.get(`Setup ${coin}`, url, true);
+              if (t === null) throw new Error(this.lastGetError ?? "indisponible");
+              return t;
+            },
+            svc,
+            coin,
+            { btcTrend: L.btcTrend.value, emit: L.warm, skipBinance: now < L.binanceBackoffUntil, now },
+          );
+          if (coin === "BTC") L.btcTrend = { value: r.trend, at: now };
+          done++;
+        } catch {
+          // coin without candles on Binance / Coinbase: skipped silently
+        }
+      }
+      if (done) sources.setup = `${done} cryptos analysées (${svc.setups().count} au total)`;
+    }
+
+    const full = stage === 3;
+    if (stage > 0) L.stage = stage >= 3 ? 0 : stage + 1;
+    if (full) {
       L.lastFullRunAt = now;
-      L.warm = true; // after the first full pass, alerts are live
+      L.warm = true; // after the first complete cycle, alerts are live
     }
     svc.tickOutcomes(now);
 
     await this.flushDiscord();
-    const status = await this.save(t0, sources, full);
+    const status = await this.save(t0, sources, full, stage > 0);
     await this.scheduleNext();
     return status;
   }
@@ -680,6 +885,7 @@ export class RadarState {
     this.clock = Date.now();
     this.errors = [];
     this.signalsThisRun = 0;
+    this.budget = REQUEST_BUDGET;
     const L = await this.load();
     const list = Array.isArray((body as { signals?: unknown })?.signals) ? (body as { signals: unknown[] }).signals.slice(0, 100) : [];
     let accepted = 0;
@@ -688,6 +894,11 @@ export class RadarState {
       const s = sanitizeRelayed(x, this.clock);
       if (typeof s === "string") {
         reasons[s] = (reasons[s] ?? 0) + 1;
+        continue;
+      }
+      // The bot computes setups too: a setup it already alerted (same coin, same side, < 12 h) is not repeated.
+      if ((s.kind === "SETUP_LONG" || s.kind === "SETUP_SHORT") && !L.svc.claimSetup(s.coin, s.kind === "SETUP_LONG" ? "LONG" : "SHORT", this.clock)) {
+        reasons["déjà envoyé"] = (reasons["déjà envoyé"] ?? 0) + 1;
         continue;
       }
       accepted++;
@@ -711,7 +922,9 @@ export class RadarState {
   private async flushDiscord() {
     const L = this.loaded;
     if (!L) return;
+    const active = L.channels.filter((c) => c.n.active);
     for (const c of L.channels) {
+      if (this.budget <= 0) break;
       if (!c.n.active) {
         this.errors.push(`Discord ${c.label} : ${c.n.view().lastError ?? "webhook invalide"}`);
         continue;
@@ -730,23 +943,28 @@ export class RadarState {
                 : c.directions.includes("bullish") && c.directions.includes("bearish")
                   ? "Ce salon reçoit tous les signaux (haussiers 🟢, baissiers 🔴 et neutres ⚪)."
                   : `Ce salon reçoit les signaux ${c.directions.includes("bullish") ? "haussiers 🟢" : "baissiers 🔴"}${c.directions.includes("neutral") ? " et neutres ⚪" : ""}.`;
+        this.budget--;
         const r = await c.n.test(note);
         if (r.ok) L.welcomed.add(c.id);
         else this.errors.push(`Discord ${c.label} : ${r.message}`);
-      } else await c.n.pump();
+      } else {
+        // Share what is left of the request budget between the channels; the rest leaves on the next run (20 s).
+        const share = Math.max(1, Math.floor(this.budget / Math.max(1, active.length)));
+        this.budget -= await c.n.pump(share);
+      }
     }
   }
 
   private meta(L: NonNullable<RadarState["loaded"]>) {
     const seen = Object.fromEntries([...L.seen].filter(([, t]) => t > this.clock - 30 * 60_000));
-    return { warm: L.warm, welcomed: [...L.welcomed], lastFullRunAt: L.lastFullRunAt, relay: L.relay, sentLog: L.sentLog.filter((t) => t > this.clock - 86_400_000).slice(-20000), seen };
+    return { warm: L.warm, welcomed: [...L.welcomed], lastFullRunAt: L.lastFullRunAt, stage: L.stage, lastCycleAt: L.lastCycleAt, exchangeTurn: L.exchangeTurn, setupTurn: L.setupTurn, relay: L.relay, sentLog: L.sentLog.filter((t) => t > this.clock - 86_400_000).slice(-20000), seen };
   }
 
   private discordView(L: NonNullable<RadarState["loaded"]>) {
     return Object.fromEntries(L.channels.map((c) => [c.label, { directions: c.directions, ...c.n.view() }]));
   }
 
-  private async save(t0: number, sources: Record<string, string>, full: boolean): Promise<Status> {
+  private async save(t0: number, sources: Record<string, string>, full: boolean, stageRan = full): Promise<Status> {
     const L = this.loaded as NonNullable<RadarState["loaded"]>;
     const st = this.state.storage;
     const prev = (await st.get<Status>("status")) ?? null;
@@ -775,7 +993,7 @@ export class RadarState {
       listings: { cb: [...L.listings.cb], cbCoins: [...L.listings.cbCoins], bn: [...L.listings.bn], seededCb: L.listings.seededCb, seededBn: L.listings.seededBn },
       cb: L.history.export(),
       bn: L.binance.export(), discord: Object.fromEntries(L.channels.map((c) => [c.id, c.n.exportState()])), meta: this.meta(L), status };
-    if (full) {
+    if (stageRan) {
       // Compact: the worker needs cooldowns and recent signals, not full history.
       const intel = L.svc.exportState();
       const recent = this.clock - 3 * 3_600_000;
@@ -785,11 +1003,12 @@ export class RadarState {
       entries.intel = intel;
       entries.tracker = L.svc.tracker.exportRecent(3000);
       entries.leverageBoard = L.svc.leverage();
+      entries.setupBoard = L.svc.setups({ limit: 150 });
     } else {
       // Fast runs only persist cooldowns + recent signals (small).
       const e = L.svc.engine.exportState();
       const saved = (await st.get<IntelSavedState>("intel")) ?? null;
-      if (saved) entries.intel = { ...saved, engine: { ...saved.engine, cooldowns: e.cooldowns, signals: e.signals.filter((s) => s.ts >= this.clock - 3 * 3_600_000).slice(-600) } };
+      if (saved) entries.intel = { ...saved, setups: L.svc.setupMemory(), engine: { ...saved.engine, cooldowns: e.cooldowns, signals: e.signals.filter((s) => s.ts >= this.clock - 3 * 3_600_000).slice(-600) } };
     }
     await st.put(entries);
     return status;
@@ -830,17 +1049,19 @@ export default {
   async fetch(req: Request, env: Env): Promise<Response> {
     const url = new URL(req.url);
     if (req.method === "POST" && url.pathname === "/relay") {
-      const len = Number(req.headers.get("content-length") ?? 0);
-      if (len > 64_000) return Response.json({ ok: false, error: "trop gros" }, { status: 413 });
-      return stub(env).fetch("https://radar/relay", { method: "POST", headers: { "x-relay-key": req.headers.get("x-relay-key") ?? "", "content-type": "application/json" }, body: await req.text() });
+      const body = await readCapped(req, 64_000);
+      if (body === null) return Response.json({ ok: false, error: "trop gros" }, { status: 413 });
+      return stub(env).fetch("https://radar/relay", { method: "POST", headers: { "x-relay-key": req.headers.get("x-relay-key") ?? "", "content-type": "application/json" }, body });
     }
     if (req.method === "POST" && url.pathname === "/test-channels") {
       return stub(env).fetch("https://radar/test-channels", { method: "POST", headers: { "x-relay-key": req.headers.get("x-relay-key") ?? "" } });
     }
     if (req.method === "POST" && url.pathname === "/prefs") {
-      return stub(env).fetch("https://radar/prefs", { method: "POST", headers: { "x-relay-key": req.headers.get("x-relay-key") ?? "", "content-type": "application/json" }, body: (await req.text()).slice(0, 32_000) });
+      const body = await readCapped(req, 32_000);
+      if (body === null) return Response.json({ ok: false, error: "trop gros" }, { status: 413 });
+      return stub(env).fetch("https://radar/prefs", { method: "POST", headers: { "x-relay-key": req.headers.get("x-relay-key") ?? "", "content-type": "application/json" }, body });
     }
-    if (req.method === "GET" && ["/prefs", "/stats", "/signals", "/leverage"].includes(url.pathname)) {
+    if (req.method === "GET" && ["/prefs", "/stats", "/signals", "/leverage", "/setups"].includes(url.pathname)) {
       const r = await stub(env).fetch(`https://radar${url.pathname}${url.search}`);
       return new Response(r.body, { status: r.status, headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" } });
     }

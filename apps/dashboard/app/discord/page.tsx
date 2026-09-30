@@ -23,8 +23,26 @@ interface Prefs {
   includeCoins: string[];
   excludeCoins: string[];
   minHitRate: number | null;
+  leverage?: LeveragePrefs;
   updatedAt: number | null;
 }
+interface LeveragePrefs {
+  enabled: boolean;
+  minScore: number;
+  biases: ("LONG" | "SHORT")[];
+  minMaxLeverage: number;
+  venues: string[];
+  includeCoins: string[];
+  excludeCoins: string[];
+  strengthenStep: number;
+  remindHours: number;
+  liquidations: boolean;
+  minLiquidationUsd: number;
+}
+const LEV_DEFAULT: LeveragePrefs = { enabled: true, minScore: 25, biases: ["LONG", "SHORT"], minMaxLeverage: 0, venues: [], includeCoins: [], excludeCoins: [], strengthenStep: 15, remindHours: 0, liquidations: true, minLiquidationUsd: 500_000 };
+const VENUES = ["Coinbase International", "INTX", "Binance Futures"];
+const LIQ_STEPS = [0, 100_000, 250_000, 500_000, 1_000_000, 2_500_000, 5_000_000, 10_000_000];
+const usd = (n: number) => (n >= 1e6 ? `${n / 1e6} M$` : n >= 1e3 ? `${n / 1e3} k$` : `${n} $`);
 interface PrefsResponse {
   prefs: Prefs;
   kinds: IntelKind[];
@@ -39,6 +57,7 @@ const GROUPS: { label: string; kinds: IntelKind[] }[] = [
   { label: "Levier et dérivés", kinds: ["LEVERAGE_LONG", "LEVERAGE_SHORT", "LIQUIDATIONS_LONG", "LIQUIDATIONS_SHORT", "FUNDING_EXTREME_LONG", "FUNDING_EXTREME_SHORT", "OPEN_INTEREST_SURGE"] },
   { label: "Nouveautés et attention", kinds: ["NEW_LISTING", "SOCIAL_BUZZ", "NEWS_BULLISH", "NEWS_BEARISH"] },
   { label: "DEX (très risqué)", kinds: ["DEX_NEW_POOL_TRACTION", "DEX_TRENDING_PUMP", "DEX_RUG_RISK"] },
+  { label: "Setups de trader (plan complet)", kinds: ["SETUP_LONG", "SETUP_SHORT"] },
   { label: "Plusieurs sources d'accord", kinds: ["CONFLUENCE"] },
 ];
 
@@ -51,6 +70,8 @@ export default function DiscordPage() {
   const [p, setP] = useState<Prefs | null>(null);
   const [inc, setInc] = useState("");
   const [exc, setExc] = useState("");
+  const [linc, setLinc] = useState("");
+  const [lexc, setLexc] = useState("");
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [testing, setTesting] = useState(false);
@@ -64,6 +85,8 @@ export default function DiscordPage() {
         setP(r.prefs);
         setInc(csv(r.prefs.includeCoins));
         setExc(csv(r.prefs.excludeCoins));
+        setLinc(csv(r.prefs.leverage?.includeCoins ?? []));
+        setLexc(csv(r.prefs.leverage?.excludeCoins ?? []));
         setErr(null);
       },
       (e: Error) => setErr(e.message),
@@ -107,11 +130,13 @@ export default function DiscordPage() {
   const toggle = (list: string[], v: string) => (list.includes(v) ? list.filter((x) => x !== v) : [...list, v]);
   const allKinds = p.kinds.length === 0;
   const allSources = p.sources.length === 0;
+  const lv: LeveragePrefs = { ...LEV_DEFAULT, ...(p.leverage ?? {}) };
+  const setLv = (patch: Partial<LeveragePrefs>) => setP({ ...p, leverage: { ...lv, ...patch } });
 
   const save = async () => {
     setBusy(true);
     try {
-      await postAction("/api/web/prefs", { ...p, includeCoins: parseCoins(inc), excludeCoins: parseCoins(exc) });
+      await postAction("/api/web/prefs", { ...p, includeCoins: parseCoins(inc), excludeCoins: parseCoins(exc), leverage: { ...lv, includeCoins: parseCoins(linc), excludeCoins: parseCoins(lexc) } });
       notify("Réglages enregistrés : le bot les applique dès maintenant.", "info");
       await load();
     } catch (e) {
@@ -138,14 +163,14 @@ export default function DiscordPage() {
         <div className="mt-4 grid gap-6 lg:grid-cols-2">
           <div>
             <div className="text-xs font-semibold uppercase text-slate-400">Force minimale</div>
-            <div className="mt-1 flex items-center gap-3">
-              <input type="range" min={0} max={100} step={5} value={p.minStrength} onChange={(e) => setP({ ...p, minStrength: Number(e.target.value) })} className="w-64" />
+            <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1">
+              <input type="range" min={0} max={100} step={5} value={p.minStrength} onChange={(e) => setP({ ...p, minStrength: Number(e.target.value) })} className="w-full max-w-64 min-w-0 flex-1 sm:w-64 sm:flex-none" />
               <span className="num w-14 text-lg font-bold">{p.minStrength}</span>
               <span className="text-xs text-slate-500">{p.minStrength === 0 ? "tout est envoyé" : "les signaux plus faibles restent sur le site"}</span>
             </div>
             <div className="mt-4 text-xs font-semibold uppercase text-slate-400">Fiabilité mesurée minimale (1 h)</div>
-            <div className="mt-1 flex items-center gap-3">
-              <input type="range" min={0} max={80} step={5} value={p.minHitRate ?? 0} onChange={(e) => setP({ ...p, minHitRate: Number(e.target.value) || null })} className="w-64" />
+            <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1">
+              <input type="range" min={0} max={80} step={5} value={p.minHitRate ?? 0} onChange={(e) => setP({ ...p, minHitRate: Number(e.target.value) || null })} className="w-full max-w-64 min-w-0 flex-1 sm:w-64 sm:flex-none" />
               <span className="num w-14 text-lg font-bold">{p.minHitRate ? `${p.minHitRate} %` : "off"}</span>
             </div>
             <p className="text-[11px] text-slate-500">Écarte les types de signaux dont la réussite mesurée (par rapport au Bitcoin) est trop faible. Les types pas encore mesurés passent toujours.</p>
@@ -220,6 +245,93 @@ export default function DiscordPage() {
             {busy ? "Enregistrement…" : "Enregistrer"}
           </button>
           {p.updatedAt && <span className="text-xs text-slate-500">dernière modification : {new Date(p.updatedAt).toLocaleString("fr-FR")}</span>}
+        </div>
+      </Card>
+
+      <Card title="⚖️ Ce que le bot envoie sur le levier">
+        <p className="text-xs text-amber-300/90">Lecture du positionnement des marchés à levier (financement, intérêt ouvert, ratio long/short, liquidations). Ce n&apos;est pas un conseil : le levier peut liquider toute la mise.</p>
+        <label className="mt-3 flex items-center gap-2 text-sm">
+          <input type="checkbox" checked={lv.enabled} onChange={(e) => setLv({ enabled: e.target.checked })} />
+          <span className="font-semibold">Envoyer les indications LONG / SHORT</span>
+        </label>
+        <div className="mt-4 grid gap-6 lg:grid-cols-2">
+          <div className={lv.enabled ? "" : "opacity-50"}>
+            <div className="text-xs font-semibold uppercase text-slate-400">Score minimal (|score| sur 100)</div>
+            <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1">
+              <input type="range" min={5} max={100} step={5} value={lv.minScore} onChange={(e) => setLv({ minScore: Number(e.target.value) })} className="w-full max-w-64 min-w-0 flex-1 sm:w-64 sm:flex-none" />
+              <span className="num w-14 text-lg font-bold">{lv.minScore}</span>
+              <span className="text-xs text-slate-500">{lv.minScore <= 25 ? "comme la page Levier" : "seulement les lectures marquées"}</span>
+            </div>
+            <div className="mt-4 text-xs font-semibold uppercase text-slate-400">Sens</div>
+            <div className="mt-1 flex gap-4 text-sm">
+              {(["LONG", "SHORT"] as const).map((b) => (
+                <label key={b} className="flex items-center gap-1.5">
+                  <input type="checkbox" checked={lv.biases.includes(b)} onChange={() => setLv({ biases: toggle(lv.biases, b) as LeveragePrefs["biases"] })} />
+                  {b === "LONG" ? "🟢 LONG" : "🔴 SHORT"}
+                </label>
+              ))}
+            </div>
+            <div className="mt-4 text-xs font-semibold uppercase text-slate-400">Levier maximal proposé au moins</div>
+            <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1">
+              <input type="range" min={0} max={100} step={5} value={lv.minMaxLeverage} onChange={(e) => setLv({ minMaxLeverage: Number(e.target.value) })} className="w-full max-w-64 min-w-0 flex-1 sm:w-64 sm:flex-none" />
+              <span className="num w-14 text-lg font-bold">{lv.minMaxLeverage ? `×${lv.minMaxLeverage}` : "tous"}</span>
+            </div>
+            <div className="mt-4 text-xs font-semibold uppercase text-slate-400">Plateformes</div>
+            <div className="mt-1 flex flex-wrap gap-2 text-xs">
+              <button onClick={() => setLv({ venues: [] })} className={`rounded border px-2 py-1 ${lv.venues.length === 0 ? "border-sky-500 text-sky-200" : "border-slate-700 text-slate-400"}`}>
+                Toutes
+              </button>
+              {VENUES.map((v) => (
+                <button key={v} onClick={() => setLv({ venues: toggle(lv.venues, v) })} className={`rounded border px-2 py-1 ${lv.venues.includes(v) ? "border-sky-500 bg-sky-900/40 text-sky-100" : "border-slate-700 text-slate-400"}`}>
+                  {v}
+                </button>
+              ))}
+            </div>
+            <div className="mt-4 grid gap-3 sm:grid-cols-2">
+              <label className="text-xs">
+                <div className="font-semibold uppercase text-slate-400">Uniquement ces cryptos</div>
+                <input value={linc} onChange={(e) => setLinc(e.target.value)} placeholder="vide = toutes (ex. BTC, ETH, SOL)" className="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-2 py-1.5 text-sm" />
+              </label>
+              <label className="text-xs">
+                <div className="font-semibold uppercase text-slate-400">Jamais ces cryptos</div>
+                <input value={lexc} onChange={(e) => setLexc(e.target.value)} placeholder="ex. PEPE" className="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-2 py-1.5 text-sm" />
+              </label>
+            </div>
+          </div>
+          <div>
+            <div className={lv.enabled ? "" : "opacity-50"}>
+              <div className="text-xs font-semibold uppercase text-slate-400">Renvoyer quand le score se renforce de</div>
+              <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1">
+                <input type="range" min={0} max={50} step={5} value={lv.strengthenStep} onChange={(e) => setLv({ strengthenStep: Number(e.target.value) })} className="w-full max-w-64 min-w-0 flex-1 sm:w-64 sm:flex-none" />
+                <span className="num w-20 text-lg font-bold">{lv.strengthenStep ? `+${lv.strengthenStep} pts` : "jamais"}</span>
+              </div>
+              <div className="mt-4 text-xs font-semibold uppercase text-slate-400">Rappel si la lecture ne change pas</div>
+              <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1">
+                <input type="range" min={0} max={24} step={1} value={lv.remindHours} onChange={(e) => setLv({ remindHours: Number(e.target.value) })} className="w-full max-w-64 min-w-0 flex-1 sm:w-64 sm:flex-none" />
+                <span className="num w-20 text-lg font-bold">{lv.remindHours ? `${lv.remindHours} h` : "jamais"}</span>
+              </div>
+            </div>
+            <label className="mt-5 flex items-center gap-2 text-sm">
+              <input type="checkbox" checked={lv.liquidations} onChange={(e) => setLv({ liquidations: e.target.checked })} />
+              <span className="font-semibold">Envoyer les vagues de liquidations</span>
+            </label>
+            <div className={`mt-2 ${lv.liquidations ? "" : "opacity-50"}`}>
+              <div className="text-xs font-semibold uppercase text-slate-400">Montant liquidé minimal en 5 min</div>
+              <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1">
+                <input type="range" min={0} max={LIQ_STEPS.length - 1} step={1} value={Math.max(0, LIQ_STEPS.findIndex((x) => x >= lv.minLiquidationUsd))} onChange={(e) => setLv({ minLiquidationUsd: LIQ_STEPS[Number(e.target.value)] })} className="w-full max-w-64 min-w-0 flex-1 sm:w-64 sm:flex-none" />
+                <span className="num w-20 text-lg font-bold">{lv.minLiquidationUsd ? usd(lv.minLiquidationUsd) : "tout"}</span>
+              </div>
+            </div>
+            <p className="mt-4 text-[11px] text-slate-500">Ces réglages ne touchent que le salon levier. Les autres signaux suivent le panneau du dessus. « Enregistrer » sauve les deux panneaux.</p>
+          </div>
+        </div>
+        <div className="mt-5 flex flex-wrap items-center gap-3">
+          <button onClick={() => void save()} disabled={busy} className="rounded bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-500 disabled:opacity-40">
+            {busy ? "Enregistrement…" : "Enregistrer"}
+          </button>
+          <button onClick={() => { setLv({ ...LEV_DEFAULT }); setLinc(""); setLexc(""); }} className="rounded border border-slate-700 px-3 py-2 text-xs text-slate-300 hover:border-slate-500">
+            Valeurs par défaut
+          </button>
         </div>
       </Card>
 

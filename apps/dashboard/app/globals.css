@@ -26,3 +26,24 @@ body {
 .flash {
   animation: flash 1.2s ease-out;
 }
+
+/* Mobile: no zoom on focus (iOS zooms inputs under 16 px), no grey tap flash, room for the tab bar. */
+html {
+  -webkit-text-size-adjust: 100%;
+  -webkit-tap-highlight-color: transparent;
+}
+@media (max-width: 767px) {
+  input,
+  select,
+  textarea {
+    font-size: 16px !important;
+  }
+  button,
+  a,
+  label {
+    touch-action: manipulation;
+  }
+}
+.pb-safe {
+  padding-bottom: env(safe-area-inset-bottom);
+}

@@ -3,7 +3,8 @@ import { useSyncExternalStore } from "react";
 /** Hash-based routing for the standalone demo (#portfolio → "/portfolio"). */
 export function currentPath(): string {
   const h = typeof location === "undefined" ? "" : location.hash.replace(/^#/, "");
-  return h ? `/${h}` : "/";
+  const p = h.split("?")[0] ?? "";
+  return p ? `/${p}` : "/";
 }
 
 function subscribe(cb: () => void) {

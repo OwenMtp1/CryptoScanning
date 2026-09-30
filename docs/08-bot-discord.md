@@ -123,8 +123,23 @@ par le bot n'est donc envoyé qu'une fois. Sans le bon code, personne ne peut é
 
 ## Coût et limites
 
-L'offre gratuite de Cloudflare suffit : 288 exécutions par jour, environ 25 requêtes chacune, et un petit stockage
-(Durable Object SQLite) pour les délais anti-doublon et l'historique des prix sur 20 min.
+L'offre gratuite de Cloudflare suffit. Le bot tourne toutes les 20 s (boucle d'alarme du Durable Object, avec la
+tâche planifiée toutes les 5 min comme filet de sécurité). Chaque passage fait **au plus 48 requêtes sortantes**,
+dont 18 sont gardées pour Discord : Cloudflare en autorise 50 par passage sur l'offre gratuite
+([changelog Cloudflare](https://developers.cloudflare.com/changelog/post/2026-02-11-subrequests-limit/),
+[limites des Durable Objects](https://developers.cloudflare.com/durable-objects/platform/limits)).
+
+Ce qui est fait à chaque passage :
+
+- Binance, Coinbase et une autre plateforme (OKX, KuCoin et MEXC à tour de rôle) ;
+- les setups de trader sur 4 cryptos à tour de rôle (une requête par crypto : bougies 1 h, la vue 4 h est
+  recalculée à partir d'elles).
+
+Ce qui est fait une fois toutes les 5 min, réparti sur 3 passages :
+
+- CoinGecko ;
+- les actualités et Reddit ;
+- les marchés à levier.
 
 Les signaux sont des **informations statistiques, pas des conseils**. Aucun ordre n'est jamais passé.
 
@@ -136,3 +151,7 @@ Les signaux sont des **informations statistiques, pas des conseils**. Aucun ordr
 - **Test local :** `npx wrangler dev --test-scheduled`, lancé depuis `deploy/discord-worker`, puis
   `curl "localhost:8787/__scheduled"`.
 - **Tests :** `apps/server/test/discord-worker.test.ts`.
+- **Routes publiques en lecture :** `/status`, `/signals`, `/stats`, `/leverage`, `/setups`, `/prefs` (GET).
+- **Routes protégées par `RELAY_KEY` :** `/relay`, `/prefs` (POST), `/test-channels`. Une mauvaise clé est refusée
+  après une pause de 400 ms. Le corps est limité à 64 ko (relais) et 32 ko (réglages), y compris sans
+  `Content-Length`.

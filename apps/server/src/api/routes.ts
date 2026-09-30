@@ -51,7 +51,7 @@ export function statusOf(ctx: RouteContext): StatusResponse {
 }
 
 const DIRECTIONS = new Set(["bullish", "bearish", "neutral"]);
-const SOURCES = new Set(["coinbase", "binance", "coingecko", "trending", "derivatives", "dex", "news", "social", "leverage"]);
+const SOURCES = new Set(["coinbase", "binance", "exchanges", "coingecko", "trending", "derivatives", "dex", "news", "social", "leverage", "setup"]);
 const csvParam = (v: string | null) => (v ? v.split(",").map((x) => x.trim()).filter(Boolean) : undefined);
 const numParam = (v: string | null) => (v === null || v === "" || !Number.isFinite(Number(v)) ? undefined : Number(v));
 
@@ -99,6 +99,7 @@ function handleIntel(ctx: RouteContext, pathname: string, params: URLSearchParam
   }
   if (pathname === "/api/intel/sources") return ok(redact(intel.sourcesView(ctx.intelExtras?.() ?? {})));
   if (pathname === "/api/intel/leverage") return ok(intel.leverage());
+  if (pathname === "/api/intel/setups") return ok(intel.setups({ bias: params.get("bias") ?? undefined, limit: Number(params.get("limit")) || undefined }));
   if (pathname === "/api/intel/config") return ok(redact(intel.config()));
   return null;
 }

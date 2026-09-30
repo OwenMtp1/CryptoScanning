@@ -7,9 +7,14 @@
 import {
   BinanceRestHistory,
   CoinMatcher,
+  EXCHANGE_NAME,
+  exchangeTradeUrl,
+  type ExchangeId,
   SocialBuzz,
   isNoiseCoin,
   readLeverage,
+  setupCandidate,
+  type TradeSetup,
   type LeverageReading,
   type PerpMarket,
   type SocialPost,
@@ -69,8 +74,12 @@ export interface IntelSavedState {
   openInterest: Record<string, number>;
   /** coin → learned usual 5-min move. */
   volatility?: Record<string, VolEntry>;
+  /** Coin names known (news matching survives a restart). */
+  names?: { symbol: string; name: string }[];
   social?: SocialState;
-  leverage?: { lastBias: Record<string, string>; oi: Record<string, number> };
+  leverage?: { lastBias: Record<string, string>; oi: Record<string, number>; lastAlert?: Record<string, { bias: string; score: number; at: number }> };
+  /** Last LONG / SHORT setup alerted per coin. */
+  setups?: Record<string, { bias: string; at: number }>;
   extras?: Record<string, unknown>;
 }
 
@@ -79,6 +88,17 @@ interface VolEntry {
   n: number;
   at: number;
 }
+
+export interface SetupView {
+  coin: string;
+  name: string | null;
+  at: number;
+  url: string | null;
+  setup: TradeSetup;
+}
+
+/** A setup already alerted in the same direction is not repeated for this long (flip-flops are ignored). */
+const SETUP_REPEAT_MS = 12 * 3_600_000;
 
 export interface MarketContext {
   btcChange1h: number | null;
@@ -104,6 +124,8 @@ const SOURCE_LABEL: Record<IntelSource | "discord", string> = {
   derivatives: "Dérivés (funding, open interest)",
   dex: "DEX on-chain (GeckoTerminal)",
   news: "Actualités (RSS)",
+  exchanges: "Autres plateformes (OKX, KuCoin, MEXC)",
+  setup: "Setups de trading (analyse technique)",
   social: "Réseaux sociaux (Reddit)",
   leverage: "Marchés à levier (Coinbase perpétuels)",
   discord: "Discord",
@@ -137,6 +159,11 @@ export class IntelService {
   private leverageAt: number | null = null;
   private perpDiag: { sources: string[]; errors: string[]; triedAt: number | null } = { sources: [], errors: [], triedAt: null };
   private lastBias = new Map<string, string>();
+  /** productId → last alert sent (to re-alert when the setup strengthens or as a reminder). */
+  private setupBoard = new Map<string, SetupView>();
+  private lastSetup = new Map<string, { bias: string; at: number }>();
+  private lastLevAlert = new Map<string, { bias: string; score: number; at: number }>();
+  private levRules = { minScore: 25, strengthenStep: 0, remindHours: 0 };
   private perpOi = new Map<string, number>();
   private lastDerivatives: CgDerivative[] = [];
   private readonly liq = new Map<string, { ts: number; side: "long" | "short"; usd: number }[]>();
@@ -151,7 +178,7 @@ export class IntelService {
     this.engine = new IntelEngine(o.cfg);
     this.tracker = new OutcomeTracker(o.cfg.tracking);
     this.social = new SocialBuzz(o.cfg.social);
-    for (const s of ["binance", "coinbase", "coingecko", "trending", "derivatives", "dex", "news", "social", "leverage", "discord"] as const) {
+    for (const s of ["binance", "coinbase", "exchanges", "coingecko", "trending", "derivatives", "dex", "news", "social", "leverage", "setup", "discord"] as const) {
       const on = o.enabledSources.includes(s);
       this.health.set(s, { source: s, enabled: on, state: on ? "waiting" : "disabled", lastSuccessAt: null, lastError: null, items: 0, note: SOURCE_LABEL[s] });
     }
@@ -171,9 +198,12 @@ export class IntelService {
     this.trendingIds = st.trendingIds ? new Set(st.trendingIds) : null;
     this.openInterest = new Map(Object.entries(st.openInterest ?? {}));
     for (const [k, v] of Object.entries(st.volatility ?? {})) this.vol.set(k, v);
+    if (st.names?.length) this.engine.seedNames(st.names, this.now());
     if (st.social) this.social = new SocialBuzz(this.cfg.social, st.social);
     this.lastBias = new Map(Object.entries(st.leverage?.lastBias ?? {}));
+    this.lastLevAlert = new Map(Object.entries(st.leverage?.lastAlert ?? {}));
     this.perpOi = new Map(Object.entries(st.leverage?.oi ?? {}));
+    this.lastSetup = new Map(Object.entries(st.setups ?? {}));
   }
 
   exportState(extras?: Record<string, unknown>): IntelSavedState {
@@ -185,8 +215,10 @@ export class IntelService {
       trendingIds: this.trendingIds ? [...this.trendingIds] : null,
       openInterest: Object.fromEntries(this.openInterest),
       volatility: Object.fromEntries(this.vol),
+      names: this.engine.dictionary().slice(0, 2000),
       social: this.social.export(),
-      leverage: { lastBias: Object.fromEntries(this.lastBias), oi: Object.fromEntries(this.perpOi) },
+      leverage: { lastBias: Object.fromEntries(this.lastBias), oi: Object.fromEntries(this.perpOi), lastAlert: Object.fromEntries(this.lastLevAlert) },
+      setups: Object.fromEntries(this.lastSetup),
       extras,
     };
   }
@@ -227,6 +259,28 @@ export class IntelService {
       h.items = tracker.coins().length;
       h.lastSuccessAt = now;
     }
+    this.emit(this.ingest(cands, now), []);
+  }
+
+  /**
+   * Other exchanges (OKX, KuCoin, MEXC): only coins that neither Binance nor Coinbase stream live —
+   * that is where they add information (coins listed elsewhere first); the same move on a coin that
+   * Binance already covers would only repeat its alert.
+   */
+  onExchangeTickers(ex: ExchangeId, tickers: BinanceMiniRestTicker[], history: BinanceRestHistory, now = this.now()) {
+    const snaps = history.update(tickers, now);
+    const cands: Candidate[] = [];
+    let used = 0;
+    for (const s of snaps) {
+      const row = this.engine.coin(s.coin);
+      if (row?.live && now - row.live.updatedAt < 120_000 && (row.onBinance || row.onCoinbase)) continue;
+      used++;
+      this.engine.upsertLive(s, now, "exchanges");
+      // Thin order books are common there: a higher volume floor.
+      const cfg = { ...this.cfg.binance, minVolume24hUsd: Math.max(this.cfg.binance.minVolume24hUsd, 500_000) };
+      for (const c of detectLive(this.withVol(s, now), cfg, "exchanges")) cands.push({ ...c, title: `${c.title} (${EXCHANGE_NAME[ex]})`, url: exchangeTradeUrl(ex, s.coin), metrics: { ...c.metrics, exchange: EXCHANGE_NAME[ex] } });
+    }
+    this.setSourceState("exchanges", "ok", `${EXCHANGE_NAME[ex]} : ${used} cryptos absentes de Binance / Coinbase suivies`, now, used);
     this.emit(this.ingest(cands, now), []);
   }
 
@@ -458,7 +512,7 @@ export class IntelService {
         c.reasons.push(`fiabilité mesurée de ce type de signal : ${(r.p * 100).toFixed(0)} % de réussite à 1 h (${r.n} mesures)`);
       }
       // 2. Market context: fighting a strong Bitcoin move rarely works for smaller coins.
-      if (ctx.btcChange1h !== null && c.coin !== "BTC" && ctx.regime !== "calme" && c.direction !== "neutral" && c.source !== "leverage") {
+      if (ctx.btcChange1h !== null && c.coin !== "BTC" && ctx.regime !== "calme" && c.direction !== "neutral" && c.source !== "leverage" && c.source !== "setup") {
         const against = (ctx.regime === "baisse" && c.direction === "bullish") || (ctx.regime === "hausse" && c.direction === "bearish");
         c.strength *= against ? 0.8 : 1.1;
         c.reasons.push(against ? `prudence : ${ctx.note}, signal à contre-courant` : `porté par le marché : ${ctx.note}`);
@@ -550,10 +604,16 @@ export class IntelService {
         btcChange1h: ctx.btcChange1h,
       });
       board.push(reading);
-      const setup = Math.abs(reading.score) >= this.cfg.leverage.signalScore ? reading.bias : "NEUTRE";
+      const setup = Math.abs(reading.score) >= this.levRules.minScore && reading.bias !== "NEUTRE" ? reading.bias : "NEUTRE";
       const last = this.lastBias.get(m.productId) ?? "NEUTRE";
       if (emit && setup !== last) this.lastBias.set(m.productId, setup);
-      if (emit && setup !== "NEUTRE" && setup !== last) {
+      const prevAlert = this.lastLevAlert.get(m.productId);
+      const changed = setup !== last;
+      const stronger = !changed && prevAlert?.bias === setup && this.levRules.strengthenStep > 0 && Math.abs(reading.score) - Math.abs(prevAlert.score) >= this.levRules.strengthenStep;
+      const reminder = !changed && prevAlert?.bias === setup && this.levRules.remindHours > 0 && now - prevAlert.at >= this.levRules.remindHours * 3_600_000;
+      if (emit && setup === "NEUTRE") this.lastLevAlert.delete(m.productId);
+      if (emit && setup !== "NEUTRE" && (changed || stronger || reminder)) {
+        this.lastLevAlert.set(m.productId, { bias: setup, score: reading.score, at: now });
         const long = setup === "LONG";
         cands.push({
           coin: m.coin,
@@ -562,9 +622,9 @@ export class IntelService {
           direction: long ? "bullish" : "bearish",
           source: "leverage",
           strength: Math.min(100, Math.abs(reading.score)),
-          title: `${m.name} : indication ${setup} (score ${reading.score})${m.maxLeverage ? ` — levier max ×${m.maxLeverage}` : ""}`,
+          title: `${m.name} : ${stronger ? "indication renforcée" : reminder ? "rappel, toujours" : "indication"} ${setup} (score ${reading.score})${m.maxLeverage ? ` — levier max ×${m.maxLeverage}` : ""}`,
           reasons: [...reading.reasons, reading.liquidationMovePct !== null ? `⚠️ au levier max, ${reading.liquidationMovePct} % contre toi = liquidation` : "⚠️ levier : pertes amplifiées", "lecture statistique, pas un conseil"],
-          metrics: { productId: m.productId, score: reading.score, maxLeverage: m.maxLeverage, fundingRatePct: m.fundingPct, openInterest: m.openInterest },
+          metrics: { productId: m.productId, score: reading.score, maxLeverage: m.maxLeverage, fundingRatePct: m.fundingPct, openInterest: m.openInterest, venue: m.venue },
           priceUsd: m.price,
           url: m.url,
         });
@@ -576,9 +636,99 @@ export class IntelService {
     this.emit(this.ingest(cands, now), []);
   }
 
+  /** Alert rules of the leveraged markets (set from the Discord / Levier settings). */
+  setLeverageAlertRules(r: { minScore: number; strengthenStep: number; remindHours: number } | undefined) {
+    if (r) this.levRules = { minScore: r.minScore, strengthenStep: r.strengthenStep, remindHours: r.remindHours };
+  }
+
   /** Forget the remembered LONG / SHORT indications: every current setup is alerted again once. */
   resetLeverageBias() {
     this.lastBias.clear();
+  }
+
+  // ─── Trader setups ───────────────────────────────────────────────────────
+
+  /**
+   * A trader-style setup computed for `coin` (by the site or the bot). LONG / SHORT setups become
+   * SETUP_* signals once per direction (repeated after 12 h if still valid); WAIT only updates the board.
+   */
+  onSetup(coin: string, setup: TradeSetup, now = this.now(), url: string | null = null, emit = true) {
+    const name = this.engine.coin(coin)?.name ?? null;
+    this.setupBoard.set(coin, { coin, name, at: now, url, setup });
+    if (this.setupBoard.size > 400) {
+      const old = [...this.setupBoard.values()].sort((a, b) => a.at - b.at).slice(0, this.setupBoard.size - 400);
+      for (const o of old) this.setupBoard.delete(o.coin);
+    }
+    this.setSourceState("setup", "ok", `${this.setupBoard.size} cryptos analysées façon trader`, now, this.setupBoard.size);
+    if (!emit || setup.bias === "WAIT") return;
+    if (!this.claimSetup(coin, setup.bias, now)) return;
+    const c = setupCandidate(coin, name, setup, url);
+    if (!c) return;
+    this.emit(this.ingest([c], now), []);
+  }
+
+  /** True (and remembered) when a LONG / SHORT setup on `coin` has not been alerted in the last 12 h. */
+  claimSetup(coin: string, bias: string, now = this.now()): boolean {
+    const prev = this.lastSetup.get(coin);
+    if (prev && prev.bias === bias && now - prev.at < SETUP_REPEAT_MS) return false;
+    this.lastSetup.set(coin, { bias, at: now });
+    return true;
+  }
+
+  setups(opts: { limit?: number; bias?: string } = {}) {
+    const now = this.now();
+    const list = [...this.setupBoard.values()]
+      .filter((x) => now - x.at < 3 * 3_600_000 && (!opts.bias || x.setup.bias === opts.bias))
+      .sort((a, b) => (a.setup.bias === "WAIT" ? 1 : 0) - (b.setup.bias === "WAIT" ? 1 : 0) || b.setup.confidence - a.setup.confidence);
+    return { at: list.length ? Math.max(...list.map((x) => x.at)) : null, count: list.length, setups: list.slice(0, opts.limit ?? 400) };
+  }
+
+  /**
+   * Coins to analyse, in priority order: the ones with a recent signal (strongest first), then the
+   * leveraged markets and the most traded coins listed on Binance or Coinbase.
+   */
+  setupUniverse(n = 60): string[] {
+    const now = this.now();
+    const out: string[] = [];
+    const add = (c: string) => {
+      if (!out.includes(c) && !isNoiseCoin(c)) out.push(c);
+    };
+    add("BTC");
+    add("ETH");
+    const hot = this.engine.recentSignals({ since: now - 2 * 3_600_000, limit: 500 }).filter((x) => x.source !== "setup" && x.source !== "dex");
+    for (const x of hot.sort((a, b) => b.strength - a.strength)) {
+      const r = this.engine.coin(x.coin);
+      if (r && (r.onBinance || r.onCoinbase)) add(x.coin);
+      if (out.length >= n / 2) break;
+    }
+    for (const m of [...this.leverageBoard].sort((a, b) => (b.volume24hUsd ?? 0) - (a.volume24hUsd ?? 0)).slice(0, 30)) add(m.coin);
+    const rows = this.engine.universeRows().filter((r) => (r.onBinance || r.onCoinbase) && r.volume24hUsd !== null);
+    for (const r of rows.sort((a, b) => (b.volume24hUsd ?? 0) - (a.volume24hUsd ?? 0))) {
+      if (out.length >= n) break;
+      add(r.symbol);
+    }
+    return out.slice(0, n);
+  }
+
+  /** Derivatives context for a setup (funding, long / short ratio, open interest, max leverage). */
+  setupContext(coin: string) {
+    const m = this.leverageBoard.find((x) => x.coin === coin);
+    const row = this.engine.coin(coin);
+    return {
+      fundingPct: m?.context.binanceFundingPct ?? m?.fundingPct ?? row?.fundingRatePct ?? null,
+      longShortRatio: m?.context.longShortRatio ?? null,
+      oiChangePct: m?.context.oiChangePct ?? null,
+      maxLeverage: m?.maxLeverage ?? null,
+    };
+  }
+
+  /** Last alerted setup per coin (small; persisted on every bot run to avoid repeats after a restart). */
+  setupMemory(): Record<string, { bias: string; at: number }> {
+    return Object.fromEntries(this.lastSetup);
+  }
+
+  setupOf(coin: string): SetupView | null {
+    return this.setupBoard.get(coin.toUpperCase()) ?? null;
   }
 
   /** Candidates produced outside the built-in sources (e.g. new listings detected by the bot). */

@@ -132,6 +132,8 @@ export const KIND_LABEL: Record<IntelKind, string> = {
   SOCIAL_BUZZ: "Buzz Reddit",
   LEVERAGE_LONG: "Levier : LONG",
   LEVERAGE_SHORT: "Levier : SHORT",
+  SETUP_LONG: "Setup LONG",
+  SETUP_SHORT: "Setup SHORT",
   CONFLUENCE: "CONFLUENCE",
 };
 
@@ -145,6 +147,8 @@ export const SOURCE_LABEL: Record<IntelSource | "discord", string> = {
   news: "Actus",
   social: "Reddit",
   leverage: "Levier",
+  exchanges: "Autres CEX",
+  setup: "Setup",
   discord: "Discord",
 };
 
@@ -157,10 +161,12 @@ export const SOURCE_CLS: Record<IntelSource, string> = {
   dex: "bg-violet-500/15 text-violet-300",
   news: "bg-cyan-500/15 text-cyan-300",
   social: "bg-rose-500/15 text-rose-300",
+  exchanges: "bg-teal-500/15 text-teal-300",
+  setup: "bg-indigo-500/20 text-indigo-200",
   leverage: "bg-amber-500/20 text-amber-200",
 };
 
-export const ALL_SOURCES: IntelSource[] = ["binance", "coinbase", "coingecko", "trending", "derivatives", "dex", "news", "social", "leverage"];
+export const ALL_SOURCES: IntelSource[] = ["binance", "coinbase", "exchanges", "coingecko", "trending", "derivatives", "dex", "news", "social", "leverage", "setup"];
 
 export const dirCls = (d: Direction) => (d === "bullish" ? "text-emerald-400" : d === "bearish" ? "text-rose-400" : "text-slate-400");
 export const dirIcon = (d: Direction) => (d === "bullish" ? "▲" : d === "bearish" ? "▼" : "•");
@@ -237,4 +243,15 @@ export function metricChips(m: Record<string, number | string | null>): { label:
     out.push({ label, value, tone });
   }
   return out.slice(0, 7);
+}
+
+/** Only http(s) links from external data are clickable (no javascript:, data:…). */
+export function safeHref(u: string | null | undefined): string | undefined {
+  if (!u) return undefined;
+  try {
+    const x = new URL(u);
+    return x.protocol === "https:" || x.protocol === "http:" ? x.href : undefined;
+  } catch {
+    return undefined;
+  }
 }

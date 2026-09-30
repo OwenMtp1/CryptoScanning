@@ -2,5 +2,7 @@
   X-Content-Type-Options: nosniff
   Referrer-Policy: no-referrer
   X-Frame-Options: DENY
+  Strict-Transport-Security: max-age=31536000
+  Cross-Origin-Opener-Policy: same-origin
   Permissions-Policy: camera=(), microphone=(), geolocation=()
-  Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' https://api.coinbase.com https://api.international.coinbase.com https://fapi.binance.com https://data-api.binance.vision wss://data-stream.binance.vision wss://fstream.binance.com; frame-ancestors 'none'; base-uri 'none'; form-action 'none'
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'sha256-8FfBIy2RtB90y8q0BKtxDB6twLkQCs+zlYep7xdIeJQ='; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' https://api.coinbase.com https://api.international.coinbase.com https://fapi.binance.com https://data-api.binance.vision wss://data-stream.binance.vision wss://fstream.binance.com; frame-ancestors 'none'; base-uri 'none'; object-src 'none'; form-action 'none'

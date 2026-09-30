@@ -12,13 +12,13 @@ import type { CoinRow, Direction, IntelSignal, IntelSource, NewsItem } from "./t
 const MAX_SIGNALS = 5000;
 const MAX_NEWS = 3000;
 /** Sources that can be combined for confluence (DEX symbols are ambiguous across tokens). */
-const CONFLUENCE_SOURCES: ReadonlySet<IntelSource> = new Set(["binance", "coinbase", "coingecko", "trending", "derivatives", "news", "social"]);
+const CONFLUENCE_SOURCES: ReadonlySet<IntelSource> = new Set(["binance", "coinbase", "exchanges", "coingecko", "trending", "derivatives", "news", "social"]);
 /**
  * Independent families of evidence. Binance, Coinbase and CoinGecko all see
  * the same price move, so they count as ONE family: a confluence needs
  * agreement between different kinds of information (price, attention, leverage).
  */
-const FAMILY: Partial<Record<IntelSource, string>> = { binance: "prix", coinbase: "prix", coingecko: "prix", trending: "attention", social: "attention", news: "actualités", derivatives: "dérivés" };
+const FAMILY: Partial<Record<IntelSource, string>> = { binance: "prix", coinbase: "prix", exchanges: "prix", coingecko: "prix", trending: "attention", social: "attention", news: "actualités", derivatives: "dérivés" };
 /** A new listing is its own kind of evidence, whatever exchange reports it. */
 const familyOf = (s: IntelSignal) => (s.kind === "NEW_LISTING" ? "listing" : (FAMILY[s.source] ?? s.source));
 
@@ -102,14 +102,22 @@ export class IntelEngine {
     }
   }
 
-  upsertLive(s: LiveSnapshot, now: number, source: "binance" | "coinbase") {
+  upsertLive(s: LiveSnapshot, now: number, source: "binance" | "coinbase" | "exchanges") {
     const r = this.row(s.coin, now);
     r.live = { price: s.priceUsd, change5m: s.change5m, change15m: s.change15m, change1h: s.change1h, volumeRatio1h: s.volumeRatio1h, updatedAt: now };
     r.priceUsd = s.priceUsd;
     if (source === "binance") r.onBinance = true;
-    else r.onCoinbase = true;
+    else if (source === "coinbase") r.onCoinbase = true;
     if (r.volume24hUsd === null) r.volume24hUsd = s.volume24hUsd;
     r.updatedAt = now;
+  }
+
+  /** Restore coin names (for news matching) without market data. */
+  seedNames(entries: { symbol: string; name: string }[], now: number) {
+    for (const e of entries) {
+      const r = this.row(e.symbol, now);
+      if (r.name === r.symbol && e.name) r.name = e.name;
+    }
   }
 
   markCoinbase(symbols: Iterable<string>, now: number) {
@@ -163,7 +171,8 @@ export class IntelEngine {
     const emitted: IntelSignal[] = [];
     const cool = this.cfg.cooldownMin * 60_000;
     for (const c of cands) {
-      const key = `${c.coin}:${c.kind}`;
+      // Per source: the same move seen by Binance AND by Coinbase gives two signals (each is shown / sent).
+      const key = `${c.coin}:${c.kind}:${c.source}`;
       const last = this.lastEmit.get(key);
       if (last !== undefined && now - last < cool) continue;
       this.lastEmit.set(key, now);

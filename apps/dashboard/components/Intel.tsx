@@ -5,7 +5,7 @@ import { createContext, useCallback, useContext, useEffect, useState, type React
 import { ScoreBar } from "@/components/ui";
 import { getJson } from "@/lib/api";
 import { fmtPct } from "@/lib/format";
-import { KIND_LABEL, SOURCE_CLS, SOURCE_LABEL, dirCls, dirIcon, fmtAgo, fmtBig, fmtUsd, metricChips, type CoinDetail, type FeedSignal } from "@/lib/intel";
+import { KIND_LABEL, SOURCE_CLS, SOURCE_LABEL, dirCls, dirIcon, fmtAgo, fmtBig, fmtUsd, metricChips, safeHref, type CoinDetail, type FeedSignal } from "@/lib/intel";
 
 export function SourceBadge({ source }: { source: IntelSource }) {
   return <span className={`rounded px-1.5 py-0.5 text-[10px] font-bold uppercase ${SOURCE_CLS[source]}`}>{SOURCE_LABEL[source]}</span>;
@@ -195,7 +195,7 @@ export function SignalCard({ s, compact = false }: { s: FeedSignal; compact?: bo
           {open ? "▾ masquer le détail" : `▸ pourquoi ? (${s.reasons.length})`}
         </button>
         {s.url && (
-          <a href={s.url} target="_blank" rel="noopener noreferrer" className="text-sky-400 hover:underline">
+          <a href={safeHref(s.url)} target="_blank" rel="noopener noreferrer" className="text-sky-400 hover:underline">
             source ↗
           </a>
         )}
@@ -229,7 +229,7 @@ export function NewsList({ items, max = 100 }: { items: NewsItem[]; max?: number
             ))}
             {n.tags.length > 0 && <span className="text-slate-400">· {n.tags.join(", ")}</span>}
           </div>
-          <a href={n.link} target="_blank" rel="noopener noreferrer" className="mt-0.5 block text-sm text-slate-200 hover:text-sky-300">
+          <a href={safeHref(n.link)} target="_blank" rel="noopener noreferrer" className="mt-0.5 block text-sm text-slate-200 hover:text-sky-300">
             {n.title}
           </a>
         </li>
