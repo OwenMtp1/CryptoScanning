@@ -327,3 +327,16 @@ Le moteur est `packages/core/src/intel/verdict.ts`.
   après la précédente est retenue, sauf si sa force est ≥ 75.
 - **Page « 🧭 Avis »** : chaque avis actif avec sa conviction, son ancienneté, sa variation depuis l'avis, son
   invalidation, ses objectifs, le détail des trois parts du score et les changements en observation.
+
+## 18. Salon dédié « état du marché »
+
+- **Nouveau webhook facultatif `DISCORD_WEBHOOK_MARKET`** (secret du worker). Ce salon ne reçoit que l'état du marché
+  et les avertissements du bot (par exemple « Binance refuse l'accès »), jamais les signaux.
+- **Sans lui,** l'état du marché va dans le salon neutre, sinon dans les salons haussier et baissier.
+- **Le message est refait en 5 blocs colorés :**
+  1. **📊 État du marché** : la tendance générale en un mot, Bitcoin et Ethereum (prix, 1 h, 24 h), le nombre de
+     signaux de la période, l'humeur des actus.
+  2. **🧭 Avis en cours** : les avis haussiers et baissiers du bot avec leur conviction et la variation depuis l'avis.
+  3. **🚀 Ça bouge (1 h)** : les hausses et les baisses en deux colonnes alignées.
+  4. **🔥 On en parle** : les 3 sujets chauds et les cryptos les plus citées.
+  5. **📰 À la une** : 4 titres avec leur lien, les liens vers le site et l'état des sources en bas.

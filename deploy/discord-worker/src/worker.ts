@@ -50,7 +50,7 @@ import { fetchText } from "../../../apps/server/src/intel/http";
 import { loadPerpMarkets } from "../../../apps/server/src/intel/perp-sources";
 import { IntelService, type IntelSavedState } from "../../../apps/server/src/intel/intel-service";
 import { runSetup } from "../../../apps/server/src/intel/setup-scanner";
-import { marketPointEmbed } from "../../../apps/server/src/intel/market-point";
+import { marketPointEmbeds } from "../../../apps/server/src/intel/market-point";
 
 const cutText = (t: string, n: number) => (t.length <= n ? t : `${t.slice(0, n - 1)}…`);
 
@@ -69,6 +69,8 @@ interface Env {
   RELAY_KEY?: string;
   /** Optional: channel for leveraged markets (long / short setups, liquidations). */
   DISCORD_WEBHOOK_LEVERAGE?: string;
+  /** Dedicated channel for the « État du marché » (and the bot's own notices); receives no signals. */
+  DISCORD_WEBHOOK_MARKET?: string;
 }
 interface Storage {
   get<T>(key: string): Promise<T | undefined>;
@@ -259,7 +261,7 @@ export function passesPrefs(p: DiscordPrefs, s: IntelSignal, hitRate: number | n
 }
 
 interface Channel {
-  id: "bullish" | "bearish" | "general" | "leverage";
+  id: "bullish" | "bearish" | "general" | "leverage" | "market";
   label: string;
   directions: ("bullish" | "bearish" | "neutral")[];
   n: DiscordNotifier;
@@ -477,7 +479,7 @@ export class RadarState {
           const L = await this.load();
           const results = [];
           for (const c of L.channels) {
-            const what = c.id === "leverage" ? "marchés à levier (long/short, liquidations)" : c.directions.map((d) => (d === "bullish" ? "haussiers 🟢" : d === "bearish" ? "baissiers 🔴" : "neutres ⚪")).join(" + ");
+            const what = c.id === "market" ? "état du marché (toutes les heures)" : c.id === "leverage" ? "marchés à levier (long/short, liquidations)" : c.directions.map((d) => (d === "bullish" ? "haussiers 🟢" : d === "bearish" ? "baissiers 🔴" : "neutres ⚪")).join(" + ");
             const r = c.n.active ? await c.n.test(`🧪 **Test** depuis le panneau Discord du site : ce salon reçoit les signaux ${what}.`) : { ok: false, message: c.n.view().lastError ?? "webhook invalide" };
             results.push({ channel: c.label, ok: r.ok, message: r.message });
           }
@@ -486,6 +488,7 @@ export class RadarState {
             !this.env.DISCORD_WEBHOOK_BEARISH && "DISCORD_WEBHOOK_BEARISH (salon baissier)",
             !this.env.DISCORD_WEBHOOK_NEUTRAL && !this.env.DISCORD_WEBHOOK_URL && "DISCORD_WEBHOOK_NEUTRAL (salon neutre)",
             !this.env.DISCORD_WEBHOOK_LEVERAGE && "DISCORD_WEBHOOK_LEVERAGE (salon levier)",
+            !this.env.DISCORD_WEBHOOK_MARKET && "DISCORD_WEBHOOK_MARKET (salon état du marché, facultatif)",
           ].filter(Boolean);
           return { ok: true, results, missing };
         }),
@@ -548,13 +551,14 @@ export class RadarState {
       { id: "bearish", label: "baissier", url: bear, directions: general ? ["bearish"] : ["bearish", "neutral"] },
       { id: "general", label: bull && bear ? "neutre" : "général", url: general, directions: cfg.discord.directions.filter((d) => !(d === "bullish" && bull) && !(d === "bearish" && bear)) },
       { id: "leverage", label: "levier", url: lev, directions: ["bullish", "bearish", "neutral"] },
+      { id: "market", label: "état du marché", url: env.DISCORD_WEBHOOK_MARKET?.trim() || null, directions: [] },
     ];
     const savedDiscord = ((await st.get<Record<string, unknown>>("discord")) ?? {}) as Record<string, unknown>;
     const errorsSink = (label: string) => (e: { level: string; message: string }) => {
       if (e.level === "warn" || e.level === "error") this.errors.push(`Discord ${label} : ${e.message}`);
     };
     const channels: Channel[] = specs
-      .filter((c) => c.url && c.directions.length)
+      .filter((c) => c.url && (c.directions.length || c.id === "market"))
       .map((c) => {
         const n = new DiscordNotifier({ webhookUrl: c.url, cfg: { ...cfg.discord, directions: c.directions }, fetchText, log: errorsSink(c.label), hitRateOf: (s) => this.loaded?.svc.hitRateOf(s) ?? null, siteUrl: (env.SITE_URL ?? "").trim() || null, now: () => this.clock });
         // Old single-channel state (v1) belongs to the general channel.
@@ -1039,7 +1043,10 @@ export class RadarState {
     svc.tickOutcomes(now);
 
     // Binance refusing the bot for 30 min: say so on Discord (once every 6 h), with the exact reason.
+    // Market overview and the bot's notices: the dedicated channel, else the neutral one, else bull + bear.
     const infoChannels = (() => {
+      const market = L.channels.filter((c) => c.id === "market");
+      if (market.length) return market;
       const general = L.channels.filter((c) => c.id === "general");
       return general.length ? general : L.channels.filter((c) => c.id !== "leverage");
     })();
@@ -1065,8 +1072,8 @@ export class RadarState {
       L.lastPointAt = now;
       const bn = L.binanceDiag.host ? `Binance ✅ (${L.binanceDiag.host})` : `Binance ❌ (${L.binanceDiag.lastError ?? L.binanceDiag.webError ?? "refusé"})`;
       const others = ["coinbase", "okx", "kucoin", "mexc", "leverage"].map((k) => `${{ coinbase: "Coinbase", okx: "OKX", kucoin: "KuCoin", mexc: "MEXC", leverage: "Levier" }[k]} ${sources[k] || (k === "coinbase" && now < L.coinbaseBackoffUntil) ? (sources[k] ? "✅" : "⏸") : "·"}`);
-      const embed = marketPointEmbed(svc, now, { siteUrl: site || null, everyMin: mpEvery, sourcesLine: [bn, ...others].join(" · ") });
-      for (const c of infoChannels) c.n.enqueue([embed]);
+      const embeds = marketPointEmbeds(svc, now, { siteUrl: site || null, everyMin: mpEvery, sourcesLine: [bn, ...others].join(" · ") });
+      for (const c of infoChannels) c.n.enqueue(embeds);
     }
 
     await this.flushDiscord();
@@ -1150,7 +1157,9 @@ export class RadarState {
       if (!L.welcomed.has(c.id)) {
         // New channel: a hello message instead of a burst of alerts.
         const note =
-          c.id === "leverage"
+          c.id === "market"
+            ? "📊 Ce salon reçoit l'**état du marché** (météo du marché, avis en cours, ce qui bouge, sujets chauds, actus) à intervalle régulier, et les avertissements du bot."
+            : c.id === "leverage"
             ? "⚖️ Ce salon reçoit les **marchés à levier** : indications long / short et liquidations en cascade. Le levier amplifie les pertes."
             : c.id === "bullish"
             ? "🟢 Ce salon reçoit les signaux **haussiers** (cryptos qui pourraient exploser)."

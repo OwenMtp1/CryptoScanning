@@ -510,21 +510,23 @@ describe("Discord worker", () => {
     price = 1.08;
     await run();
     const msgs = posted.map((p) => JSON.parse(p.body));
-    const point = msgs.find((m) => m.embeds?.[0]?.title?.startsWith("📊 Point marché"));
+    const point = msgs.find((m) => m.embeds?.[0]?.title?.startsWith("📊 État du marché"));
     expect(point).toBeTruthy();
-    const names = point.embeds[0].fields.map((f: { name: string }) => f.name).join(" | ");
-    expect(names).toContain("Narratifs chauds");
-    expect(point.embeds[0].description).toContain("Contexte");
+    expect(point.embeds.map((e: { title: string }) => e.title.replace(/\d\d:\d\d/, "HH:MM"))).toEqual(["📊 État du marché · HH:MM", "🧭 Avis en cours", "🚀 Ça bouge (1 h)", "🔥 On en parle", "📰 À la une"]);
+    expect(point.embeds[0].description).toContain("Tendance générale");
+    expect(point.embeds[0].fields.map((f: { name: string }) => f.name)).toContain("₿ Bitcoin");
+    const total = point.embeds.reduce((a: number, e: { title: string; description?: string; footer?: { text: string }; fields?: { name: string; value: string }[] }) => a + e.title.length + (e.description?.length ?? 0) + (e.footer?.text.length ?? 0) + (e.fields ?? []).reduce((x, f) => x + f.name.length + f.value.length, 0), 0);
+    expect(total).toBeLessThanOrEqual(6000);
     // Alerts carry the same details as the site's cards.
     const alert = msgs.find((m) => m.embeds?.[0]?.title?.includes("PEPE décolle"))?.embeds[0];
     expect(alert.footer.text).toMatch(/Décollage · Coinbase/);
     expect(alert.fields.some((f: { name: string }) => f.name === "Mesures")).toBe(true);
     expect(alert.fields.find((f: { name: string }) => f.name === "Liens").value).toContain(`${SITE}/#courbe?coin=PEPE`);
     // Only once per hour.
-    const n = msgs.filter((m) => m.embeds?.[0]?.title?.startsWith("📊")).length;
+    const n = msgs.filter((m) => m.embeds?.[0]?.title?.startsWith("📊 État")).length;
     vi.setSystemTime(Date.UTC(2026, 8, 24, 12, 20));
     await run();
-    expect(posted.map((p) => JSON.parse(p.body)).filter((m) => m.embeds?.[0]?.title?.startsWith("📊")).length).toBe(n);
+    expect(posted.map((p) => JSON.parse(p.body)).filter((m) => m.embeds?.[0]?.title?.startsWith("📊 État")).length).toBe(n);
   });
 
   it("Binance API refused everywhere: Binance's website list keeps Binance alerts going; if that fails too, Discord is told why", async () => {
@@ -622,5 +624,28 @@ describe("Discord worker", () => {
     } finally {
       klines1h = null;
     }
+  });
+
+  it("a dedicated market channel (DISCORD_WEBHOOK_MARKET) gets the market overview and nothing else", async () => {
+    vi.useFakeTimers({ now: Date.UTC(2026, 8, 29, 11, 58), toFake: ["Date"] });
+    const byHook: Record<string, string[]> = {};
+    vi.stubGlobal("fetch", vi.fn(async (u: string, i?: { method?: string; body?: string }) => {
+      if (u.startsWith("https://discord.com/")) (byHook[u.split("/")[5]!] ??= []).push(i?.body ?? "");
+      return fakeFetch(u, i);
+    }));
+    const st = storage({ point: true });
+    const env = { RADAR: {} as never, DISCORD_WEBHOOK_BULLISH: "https://discord.com/api/webhooks/1/up", DISCORD_WEBHOOK_BEARISH: "https://discord.com/api/webhooks/2/down", DISCORD_WEBHOOK_MARKET: "https://discord.com/api/webhooks/9/mkt", SITE_URL: SITE };
+    const run = () => scan3(() => new RadarState({ storage: st } as never, env));
+    price = 1;
+    await run();
+    vi.setSystemTime(Date.UTC(2026, 8, 29, 12, 3));
+    price = 1.1;
+    await run();
+    const market = byHook["9"] ?? [];
+    expect(market[0]).toContain("état du marché"); // welcome
+    expect(market.slice(1).every((b) => b.includes("📊 État du marché"))).toBe(true);
+    expect(market.length).toBeGreaterThanOrEqual(2); // welcome + one overview per hour (first one right after start-up)
+    expect((byHook["1"] ?? []).some((b) => b.includes("📊 État du marché"))).toBe(false);
+    expect((byHook["1"] ?? []).length).toBeGreaterThan(1); // signals still go to the bullish channel
   });
 });

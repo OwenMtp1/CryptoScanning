@@ -321,10 +321,10 @@ export default function DiscordPage() {
         </div>
       </Card>
 
-      <Card title="📊 Point marché sur Discord">
+      <Card title="📊 État du marché sur Discord">
         <label className="flex items-center gap-2 text-sm">
           <input type="checkbox" checked={mp.enabled} onChange={(e) => setMp({ enabled: e.target.checked })} />
-          <span className="font-semibold">Envoyer un point marché</span>
+          <span className="font-semibold">Envoyer l&apos;état du marché</span>
         </label>
         <div className={`mt-2 flex flex-wrap items-center gap-1 ${mp.enabled ? "" : "opacity-50"}`}>
           <span className="mr-2 text-xs text-slate-400">toutes les</span>
@@ -335,7 +335,7 @@ export default function DiscordPage() {
           ))}
         </div>
         <p className="mt-2 text-[11px] text-slate-500">
-          La vue d&apos;ensemble du site dans un message : contexte du marché, signaux de la période, narratifs chauds, cryptos dont on parle, plus fortes hausses et baisses sur 1 h, actus à la une. Envoyé dans le salon neutre (sinon dans les salons haussier et baissier).
+          Un message en 5 blocs : météo du marché (tendance, Bitcoin, Ethereum, signaux, humeur), avis en cours, ce qui bouge sur 1 h, sujets chauds, actus à la une. Envoyé dans le salon « état du marché » (<code>DISCORD_WEBHOOK_MARKET</code>) s&apos;il existe, sinon dans le salon neutre, sinon dans les salons haussier et baissier.
         </p>
         <div className="mt-3">
           <button onClick={() => void save()} disabled={busy} className="rounded bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-500 disabled:opacity-40">
@@ -533,13 +533,13 @@ export default function DiscordPage() {
             <li key={c.id} className="flex flex-wrap gap-2">
               <span className={c.active ? "text-emerald-400" : "text-amber-300"}>{c.active ? "●" : "○"}</span>
               <span className="font-semibold">Salon {c.label}</span>
-              <span className="text-slate-500">{c.id === "leverage" ? "levier, liquidations" : c.directions.join(" + ")}</span>
+              <span className="text-slate-500">{c.id === "leverage" ? "levier, liquidations" : c.id === "market" ? "état du marché + avertissements du bot" : c.directions.join(" + ")}</span>
             </li>
           ))}
           {!d.channels.length && <li className="text-slate-500">Aucun webhook configuré sur le bot.</li>}
         </ul>
         <p className="mt-2 text-[11px] text-slate-500">
-          Les salons se règlent dans Cloudflare (worker <code>crypto-radar-discord</code> → Variables and Secrets) : <code>DISCORD_WEBHOOK_BULLISH</code>, <code>DISCORD_WEBHOOK_BEARISH</code>, <code>DISCORD_WEBHOOK_URL</code> (neutres), <code>DISCORD_WEBHOOK_LEVERAGE</code> (levier).
+          Les salons se règlent dans Cloudflare (worker <code>crypto-radar-discord</code> → Variables and Secrets) : <code>DISCORD_WEBHOOK_BULLISH</code>, <code>DISCORD_WEBHOOK_BEARISH</code>, <code>DISCORD_WEBHOOK_URL</code> (neutres), <code>DISCORD_WEBHOOK_LEVERAGE</code> (levier), <code>DISCORD_WEBHOOK_MARKET</code> (état du marché).
         </p>
       </Card>
     </div>
