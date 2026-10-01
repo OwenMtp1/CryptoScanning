@@ -10,6 +10,7 @@ import CourbePage from "../app/courbe/page";
 import SetupsPage from "../app/setups/page";
 import TendancesPage from "../app/tendances/page";
 import DemoPage from "../app/demo/page";
+import AvisPage from "../app/avis/page";
 import { DialogProvider } from "../components/Dialogs";
 import { CoinDrawerProvider } from "../components/Intel";
 import { RadarStreamProvider } from "../lib/stream";
@@ -26,9 +27,11 @@ const ROUTES: Record<string, ComponentType> = {
   "/setups": SetupsPage,
   "/tendances": TendancesPage,
   "/demo": DemoPage,
+  "/avis": AvisPage,
   "/discord": DiscordPage,
 };
 const NAV = [
+  ["/avis", "Avis"],
   ["/", "Flux"],
   ["/univers", "Univers"],
   ["/performance", "Performance"],
@@ -43,9 +46,9 @@ const NAV = [
 
 /** Phone tab bar: the 4 most used pages + « Plus » for the others. */
 const TABS = [
+  ["/avis", "🧭", "Avis"],
   ["/", "📡", "Flux"],
   ["/tendances", "🔥", "Tendances"],
-  ["/setups", "🎯", "Setups"],
   ["/courbe", "📈", "Courbe"],
 ] as const;
 const MORE = NAV.filter(([h]) => !TABS.some(([t]) => t === h));

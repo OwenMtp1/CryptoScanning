@@ -116,6 +116,8 @@ export default function FluxPage() {
       {marked.length > 0 && (
         <div className={`rounded border px-3 py-2 text-xs ${dc("nokey") || dc("filtered") || dc("nochannel") ? "border-amber-600/50 bg-amber-500/10 text-amber-100" : "border-slate-800 bg-slate-900/60 text-slate-300"}`}>
           <strong>Discord (1 h) :</strong> {dc("sent")} envoyés · {dc("queued")} en route · {dc("dup")} doublons (même événement déjà envoyé)
+          {dc("conseil") > 0 && <> · {dc("conseil")} gardés sur le site (mode conseil : seuls les changements d&apos;avis partent)</>}
+          {dc("flip") > 0 && <> · {dc("flip")} contradictoires retenus</>}
           {dc("filtered") > 0 && <> · <strong>{dc("filtered")} écartés par tes réglages</strong> (<a href="#discord" className="underline">page Discord</a>, mets la force minimale à 0 et « Tous » pour tout recevoir)</>}
           {dc("nokey") > 0 && <> · <strong>{dc("nokey")} bloqués sur cet appareil</strong> : ajoute une fois <code>RELAY_KEY</code> au projet Pages du site (relais automatique sur tous tes appareils), ou entre le code ici (<a href="#sources" className="underline">page Sources</a>)</>}
           {dc("nochannel") > 0 && <> · {dc("nochannel")} sans salon (ajoute le webhook manquant)</>}

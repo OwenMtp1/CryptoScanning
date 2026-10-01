@@ -5,7 +5,7 @@
  */
 import { json } from "../../../lib/proxy.js";
 
-const GET_PATHS = new Set(["stats", "signals", "leverage", "prefs", "setups"]);
+const GET_PATHS = new Set(["stats", "signals", "leverage", "prefs", "setups", "verdicts"]);
 
 function base(ctx) {
   const b = (ctx.env.DISCORD_WORKER_URL || "").trim().replace(/\/+$/, "");

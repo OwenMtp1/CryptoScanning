@@ -74,7 +74,7 @@ export async function startWeb(): Promise<DemoBackend> {
   const cfg = IntelConfigSchema.parse({ coingecko: { universeSize: 750 } });
   const log = new BrowserEventLog([], 1500);
   const emit = (e: Parameters<BrowserEventLog["emit"]>[0]) => void log.emit(e);
-  const svc = new IntelService({ cfg, log: emit, notifier: null, enabledSources: ["binance", "coinbase", "coingecko", "trending", "derivatives", "dex", "news", "social", "leverage", "setup", "discord"] });
+  const svc = new IntelService({ cfg, log: emit, notifier: null, enabledSources: ["binance", "coinbase", "coingecko", "trending", "derivatives", "dex", "news", "social", "leverage", "setup", "verdict", "discord"] });
   const saved = load();
   svc.restore(saved);
 
@@ -247,8 +247,9 @@ export async function startWeb(): Promise<DemoBackend> {
   // EVERY signal shown on the site goes into the queue — even before the relay code is entered:
   // the backlog (up to 40 min) is sent as soon as the code is activated.
   svc.subscribe((b) => {
-    for (const s of b.signals) marks.set(s.id, "queued");
-    for (const s of b.signals) relayQueue.push({ id: s.id, ts: s.ts, coin: s.coin, coinName: s.coinName, kind: s.kind, direction: s.direction, source: s.source, strength: s.strength, title: s.title, reasons: s.reasons.slice(0, 10), priceUsd: s.priceUsd, url: s.url, metrics: s.metrics });
+    // The official trend verdict is the bot's: this page's own opinions stay on the site.
+    for (const s of b.signals) marks.set(s.id, s.source === "verdict" ? "local" : "queued");
+    for (const s of b.signals.filter((x) => x.source !== "verdict")) relayQueue.push({ id: s.id, ts: s.ts, coin: s.coin, coinName: s.coinName, kind: s.kind, direction: s.direction, source: s.source, strength: s.strength, title: s.title, reasons: s.reasons.slice(0, 10), priceUsd: s.priceUsd, url: s.url, metrics: s.metrics });
   });
   /** The site holds the relay code itself (RELAY_KEY on the Pages project): no code to type on this device. */
   let autoRelay = false;
@@ -587,6 +588,17 @@ export async function startWeb(): Promise<DemoBackend> {
         if (!/^[A-Z0-9]{1,20}$/.test(coin)) throw new Error("crypto invalide");
         const row = svc.engine.coin(coin);
         return { coin, price: await orderPrice(coin), name: row?.name ?? null, change24h: row?.change24h ?? null, maxLeverage: svc.setupContext(coin).maxLeverage };
+      }
+      if (u.pathname === "/api/intel/verdicts") {
+        // The bot's opinions (official, 24/7) first; this page's own fill the gaps.
+        const bot = await botGet<{ verdicts: { coin: string; evaluatedAt: number }[] }>("/api/discord/verdicts");
+        const mine = svc.verdictBoard();
+        const byCoin = new Map<string, unknown>();
+        for (const v of mine.verdicts) byCoin.set(v.coin, { ...v, origin: "site" });
+        for (const v of bot?.verdicts ?? []) if (Date.now() - v.evaluatedAt < 3 * 3_600_000) byCoin.set(v.coin, { ...v, origin: "bot" });
+        const list = [...byCoin.values()] as { state: string; score: number }[];
+        list.sort((a, b) => (a.state === "NEUTRAL" ? 1 : 0) - (b.state === "NEUTRAL" ? 1 : 0) || Math.abs(b.score) - Math.abs(a.score));
+        return { count: list.length, verdicts: list, botOnline: !!bot };
       }
       if (u.pathname === "/api/intel/setups") return mergedSetups(u.searchParams.get("bias") ?? undefined);
       if (u.pathname === "/api/web/candles") {

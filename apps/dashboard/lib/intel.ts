@@ -9,6 +9,9 @@ export function discordMarkLabel(m: string | null | undefined): { text: string; 
   if (!m) return null;
   if (m === "sent") return { text: "✓ envoyé sur Discord", tone: "ok" };
   if (m === "queued") return { text: "⏳ en route vers Discord", tone: "wait" };
+  if (m === "conseil") return { text: "Discord : mode conseil (seuls les changements d'avis partent)", tone: "off" };
+  if (m === "flip") return { text: "Discord : retenu (sens inverse d'une alerte envoyée il y a moins de 30 min)", tone: "off" };
+  if (m === "local") return { text: "avis calculé par cette page (l'avis officiel envoyé sur Discord est celui du bot)", tone: "off" };
   if (m === "dup") return { text: "Discord : déjà envoyé (même événement, même source, < 30 min)", tone: "off" };
   if (m === "filtered") return { text: "Discord : écarté par tes réglages (page Discord)", tone: "bad" };
   if (m === "nokey") return { text: "Discord : non envoyé, code de relais absent sur cet appareil", tone: "bad" };
@@ -137,10 +140,11 @@ export const SOURCE_CLS: Record<IntelSource, string> = {
   social: "bg-rose-500/15 text-rose-300",
   exchanges: "bg-teal-500/15 text-teal-300",
   setup: "bg-indigo-500/20 text-indigo-200",
+  verdict: "bg-violet-500/20 text-violet-200",
   leverage: "bg-amber-500/20 text-amber-200",
 };
 
-export const ALL_SOURCES: IntelSource[] = ["binance", "coinbase", "exchanges", "coingecko", "trending", "derivatives", "dex", "news", "social", "leverage", "setup"];
+export const ALL_SOURCES: IntelSource[] = ["binance", "coinbase", "exchanges", "coingecko", "trending", "derivatives", "dex", "news", "social", "leverage", "setup", "verdict"];
 
 export const dirCls = (d: Direction) => (d === "bullish" ? "text-emerald-400" : d === "bearish" ? "text-rose-400" : "text-slate-400");
 export const dirIcon = (d: Direction) => (d === "bullish" ? "▲" : d === "bearish" ? "▼" : "•");

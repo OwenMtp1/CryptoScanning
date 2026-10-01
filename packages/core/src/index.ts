@@ -41,3 +41,4 @@ export * from "./intel/setup.js";
 export * from "./intel/trends.js";
 export * from "./trading/demo-account.js";
 export * from "./intel/labels.js";
+export * from "./intel/verdict.js";

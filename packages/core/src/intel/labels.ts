@@ -30,6 +30,9 @@ export const KIND_LABEL: Record<IntelKind, string> = {
   LEVERAGE_SHORT: "Levier : SHORT",
   SETUP_LONG: "Setup LONG",
   SETUP_SHORT: "Setup SHORT",
+  TREND_UP: "🧭 Avis haussier",
+  TREND_DOWN: "🧭 Avis baissier",
+  TREND_EXIT: "🧭 Fin d'avis",
   CONFLUENCE: "CONFLUENCE",
 };
 
@@ -45,6 +48,7 @@ export const SOURCE_LABEL: Record<IntelSource, string> = {
   leverage: "Levier",
   exchanges: "Autres CEX",
   setup: "Setup",
+  verdict: "Avis de tendance",
 };
 
 export function fmtBig(x: number | null | undefined): string {

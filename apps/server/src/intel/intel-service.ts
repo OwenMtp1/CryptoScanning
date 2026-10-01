@@ -15,6 +15,12 @@ import {
   readLeverage,
   setupCandidate,
   buildTrends,
+  scoreVerdict,
+  stepVerdict,
+  verdictHorizon,
+  VERDICT_LABEL,
+  type VerdictMemory,
+  type VerdictScore,
   type TrendCategory,
   type TrendPost,
   type TradeSetup,
@@ -83,6 +89,8 @@ export interface IntelSavedState {
   leverage?: { lastBias: Record<string, string>; oi: Record<string, number>; lastAlert?: Record<string, { bias: string; score: number; at: number }> };
   /** Last LONG / SHORT setup alerted per coin. */
   setups?: Record<string, { bias: string; at: number }>;
+  /** Trend verdict per coin (stable opinion). */
+  verdicts?: Record<string, VerdictMemory>;
   /** Recent Reddit posts and CoinGecko trending categories (trends page). */
   trends?: { social: TrendPost[]; categories: TrendCategory[] };
   extras?: Record<string, unknown>;
@@ -131,6 +139,7 @@ const SOURCE_LABEL: Record<IntelSource | "discord", string> = {
   news: "Actualités (RSS)",
   exchanges: "Autres plateformes (OKX, KuCoin, MEXC)",
   setup: "Setups de trading (analyse technique)",
+  verdict: "Avis de tendance (opinion stable par crypto)",
   social: "Réseaux sociaux (Reddit)",
   leverage: "Marchés à levier (Coinbase perpétuels)",
   discord: "Discord",
@@ -166,6 +175,8 @@ export class IntelService {
   private lastBias = new Map<string, string>();
   /** productId → last alert sent (to re-alert when the setup strengthens or as a reminder). */
   private setupBoard = new Map<string, SetupView>();
+  private verdicts = new Map<string, VerdictMemory>();
+  private verdictScores = new Map<string, VerdictScore & { at: number; price: number; atrPct: number }>();
   /** Recent Reddit posts (titles) for the trends page. */
   private socialPosts: TrendPost[] = [];
   private trendCategories: TrendCategory[] = [];
@@ -214,6 +225,7 @@ export class IntelService {
     this.lastLevAlert = new Map(Object.entries(st.leverage?.lastAlert ?? {}));
     this.perpOi = new Map(Object.entries(st.leverage?.oi ?? {}));
     this.lastSetup = new Map(Object.entries(st.setups ?? {}));
+    this.verdicts = new Map(Object.entries(st.verdicts ?? {}));
     this.socialPosts = (st.trends?.social ?? []).filter((p) => this.now() - p.ts < 24 * 3_600_000);
     this.trendCategories = st.trends?.categories ?? [];
   }
@@ -231,6 +243,7 @@ export class IntelService {
       social: this.social.export(),
       leverage: { lastBias: Object.fromEntries(this.lastBias), oi: Object.fromEntries(this.perpOi), lastAlert: Object.fromEntries(this.lastLevAlert) },
       setups: Object.fromEntries(this.lastSetup),
+      verdicts: Object.fromEntries(this.verdicts),
       trends: { social: this.socialPosts.slice(-300), categories: this.trendCategories },
       extras,
     };
@@ -526,7 +539,7 @@ export class IntelService {
         c.reasons.push(`fiabilité mesurée de ce type de signal : ${(r.p * 100).toFixed(0)} % de réussite à 1 h (${r.n} mesures)`);
       }
       // 2. Market context: fighting a strong Bitcoin move rarely works for smaller coins.
-      if (ctx.btcChange1h !== null && c.coin !== "BTC" && ctx.regime !== "calme" && c.direction !== "neutral" && c.source !== "leverage" && c.source !== "setup") {
+      if (ctx.btcChange1h !== null && c.coin !== "BTC" && ctx.regime !== "calme" && c.direction !== "neutral" && c.source !== "leverage" && c.source !== "setup" && c.source !== "verdict") {
         const against = (ctx.regime === "baisse" && c.direction === "bullish") || (ctx.regime === "hausse" && c.direction === "bearish");
         c.strength *= against ? 0.8 : 1.1;
         c.reasons.push(against ? `prudence : ${ctx.note}, signal à contre-courant` : `porté par le marché : ${ctx.note}`);
@@ -677,6 +690,7 @@ export class IntelService {
       for (const o of old) this.setupBoard.delete(o.coin);
     }
     this.setSourceState("setup", "ok", `${this.setupBoard.size} cryptos analysées façon trader`, now, this.setupBoard.size);
+    this.updateVerdict(coin, setup, now, emit, url);
     if (!emit || setup.bias === "WAIT") return;
     if (!this.claimSetup(coin, setup.bias, now)) return;
     const c = setupCandidate(coin, name, setup, url);
@@ -737,6 +751,102 @@ export class IntelService {
       oiChangePct: m?.context.oiChangePct ?? null,
       maxLeverage: m?.maxLeverage ?? null,
     };
+  }
+
+  // ─── Trend verdict ───────────────────────────────────────────────────────
+
+  /**
+   * Re-evaluate the opinion on `coin` (called with each new trader setup). A real change of opinion
+   * becomes a TREND_UP / TREND_DOWN / TREND_EXIT signal with levels, horizon and track record.
+   */
+  updateVerdict(coin: string, setup: TradeSetup, now = this.now(), emit = true, url: string | null = null) {
+    const price = this.engine.priceOf(coin) ?? setup.price;
+    const signals = this.engine.recentSignals({ coin, since: now - 4 * 3_600_000, limit: 200 }).map((s) => ({ direction: s.direction, strength: s.strength, ts: s.ts, kind: s.kind, source: s.source, hitRate: this.hitRateOf(s) }));
+    const talk = [...this.engine.recentNews({ coin, limit: 60 }), ...this.socialPosts.filter((p) => p.coins.includes(coin))].map((n) => ({ direction: n.direction, ts: n.ts }));
+    const scored = scoreVerdict({ setup, signals, talk, price, now });
+    this.verdictScores.set(coin, { ...scored, at: now, price, atrPct: setup.atrPct });
+    const prev = this.verdicts.get(coin) ?? null;
+    const { mem, change } = stepVerdict(prev, scored, setup, price, now);
+    // During the bot's warm-up the first sightings are recorded (pending); the confirmation, once live, announces it.
+    this.verdicts.set(coin, mem);
+    if (this.verdicts.size > 500) {
+      const old = [...this.verdicts.entries()].sort((a, b) => a[1].lastEval - b[1].lastEval).slice(0, this.verdicts.size - 500);
+      for (const [k] of old) this.verdicts.delete(k);
+    }
+    if (!change || !emit) return;
+    const name = this.engine.coin(coin)?.name ?? null;
+    const up = mem.state === "UP" || mem.state === "STRONG_UP";
+    const down = mem.state === "DOWN" || mem.state === "STRONG_DOWN";
+    const kind = up ? "TREND_UP" : down ? "TREND_DOWN" : "TREND_EXIT";
+    const conviction = Math.max(0, Math.min(100, Math.round(Math.abs(scored.score) * 1.3 + 14)));
+    const pctFrom = (x: number) => `${x >= price ? "+" : ""}${(((x - price) / price) * 100).toFixed(1).replace(".", ",")} %`;
+    const f = (x: number) => (x >= 1000 ? x.toLocaleString("fr-FR", { maximumFractionDigits: 0 }) : x >= 1 ? x.toLocaleString("fr-FR", { maximumFractionDigits: 3 }) : x.toPrecision(4));
+    const record = this.hitRateOf({ kind, direction: up ? "bullish" : down ? "bearish" : "neutral" });
+    const reasons = [...scored.reasons];
+    if ((up || down) && mem.invalidation !== null) {
+      reasons.push(`📍 zone d'entrée ${f(setup.entry.low)} – ${f(setup.entry.high)} · ❌ l'avis tombe si le prix passe ${up ? "sous" : "au-dessus de"} ${f(mem.invalidation)} (${pctFrom(mem.invalidation)})`);
+      if (mem.targets.length) reasons.push(`🎯 objectifs ${mem.targets.map((t) => `${f(t)} (${pctFrom(t)})`).join(" · ")}`);
+    } else if (up || down) reasons.push("⚠️ le setup technique n'est pas aligné : avis sans niveau d'entrée, prudence");
+    if (change.why === "invalidation") reasons.unshift(`❌ l'avis ${VERDICT_LABEL[change.from]} est invalidé : le prix a cassé son niveau`);
+    reasons.push(`⏱️ horizon : ${verdictHorizon(setup.atrPct)} · détail : structure ${scored.parts.structure}, signaux ${scored.parts.evidence}, actus ${scored.parts.talk}`);
+    reasons.push(record !== null ? `📊 les avis de ce type ont réussi à ${record.toFixed(0)} % (mesuré à 1 h, par rapport au Bitcoin)` : "📊 fiabilité de ce type d'avis : en cours de mesure");
+    reasons.push("lecture statistique du marché, pas un conseil d'investissement");
+    const title =
+      kind === "TREND_EXIT"
+        ? `🧭 ${coin} : fin de l'avis ${VERDICT_LABEL[change.from]}${change.why === "invalidation" ? " (niveau cassé)" : " (tendance essoufflée)"} → NEUTRE, rester à l'écart`
+        : `🧭 ${coin} : avis ${VERDICT_LABEL[mem.state]}${change.why === "renforcement" ? " (renforcé)" : ""} · conviction ${conviction}/100 · horizon ${verdictHorizon(setup.atrPct)}`;
+    this.emit(
+      this.ingest(
+        [
+          {
+            coin,
+            coinName: name,
+            kind,
+            direction: up ? "bullish" : down ? "bearish" : "neutral",
+            source: "verdict",
+            strength: kind === "TREND_EXIT" ? 60 : conviction,
+            title,
+            reasons,
+            metrics: { score: scored.score, conviction, structure: scored.parts.structure, evidence: scored.parts.evidence, talk: scored.parts.talk, entry: price, invalidation: mem.invalidation, target1: mem.targets[0] ?? null, target2: mem.targets[1] ?? null },
+            priceUsd: price,
+            url,
+          },
+        ],
+        now,
+      ),
+      [],
+    );
+  }
+
+  /** Every coin's current opinion (Avis page). */
+  verdictBoard(now = this.now()) {
+    const list = [...this.verdicts.entries()]
+      .map(([coin, m]) => {
+        const sc = this.verdictScores.get(coin);
+        const price = this.engine.priceOf(coin) ?? sc?.price ?? null;
+        return {
+          coin,
+          name: this.engine.coin(coin)?.name ?? null,
+          state: m.state,
+          label: VERDICT_LABEL[m.state],
+          since: m.since,
+          score: m.score,
+          conviction: Math.max(0, Math.min(100, Math.round(Math.abs(m.score) * 1.3 + 14))),
+          entry: m.entry,
+          invalidation: m.invalidation,
+          targets: m.targets,
+          price,
+          changeSincePct: price && m.entry ? ((price - m.entry) / m.entry) * 100 : null,
+          pending: m.pending?.state ?? null,
+          reasons: sc?.reasons ?? [],
+          parts: sc?.parts ?? null,
+          horizon: sc ? verdictHorizon(sc.atrPct) : null,
+          evaluatedAt: m.lastEval,
+        };
+      })
+      .filter((x) => now - x.evaluatedAt < 6 * 3_600_000)
+      .sort((a, b) => (a.state === "NEUTRAL" ? 1 : 0) - (b.state === "NEUTRAL" ? 1 : 0) || Math.abs(b.score) - Math.abs(a.score));
+    return { at: list.length ? Math.max(...list.map((x) => x.evaluatedAt)) : null, count: list.length, verdicts: list };
   }
 
   /** Last alerted setup per coin (small; persisted on every bot run to avoid repeats after a restart). */

@@ -300,3 +300,30 @@ Le mode est actif par défaut et se règle dans la page Discord, carte « Envoi 
   - il retire des titres et des raisons le texte cliquable et les liens ;
   - il ne garde que les liens vers des plateformes et médias connus ;
   - les réglages Discord et le test des salons exigent toujours le code.
+
+## 17. Avis de tendance et mode « conseil »
+
+Le moteur est `packages/core/src/intel/verdict.ts`.
+
+- **Un avis stable par crypto** au lieu d'alertes contradictoires : HAUSSIER FORT, HAUSSIER, NEUTRE, BAISSIER ou
+  BAISSIER FORT.
+- **Le score combine trois parts :**
+  - 60 % de structure (setup trader : tendance 1 h et 4 h, momentum, niveaux, volume, dérivés, régime du Bitcoin) ;
+  - 25 % de signaux récents, atténués avec le temps (demi-vie de 45 min) et pondérés par leur fiabilité mesurée ;
+  - 15 % d'actus et Reddit sur la crypto (6 h).
+- **Anti-girouette :**
+  - un nouvel avis doit être vu deux fois, à au moins 8 min d'écart ;
+  - un avis est gardé au moins 2 h (passer au sens opposé plus tôt exige |score| ≥ 55) ;
+  - il tombe tout de suite si le prix casse son **niveau d'invalidation** (le stop du setup) ;
+  - un renforcement (haussier → haussier fort) est annoncé, un affaiblissement non.
+- **Chaque changement d'avis devient un signal** `TREND_UP`, `TREND_DOWN` ou `TREND_EXIT` (source « Avis de
+  tendance »). Il contient la conviction, l'horizon (selon la volatilité), la zone d'entrée, le niveau qui invalide
+  l'avis, les objectifs, les raisons principales et le taux de réussite mesuré des avis passés.
+- **Le bot est la seule référence :** les avis calculés par le site restent sur le site, et le bot refuse les avis
+  relayés.
+- **Discord, mode « 🧭 conseil » (par défaut)** : seulement les changements d'avis, les nouveaux listings et le Point
+  marché. Le salon levier suit toujours son propre panneau.
+- **Discord, mode « 📡 complet »** : toutes les alertes. Une alerte de sens inverse sur la même crypto moins de 30 min
+  après la précédente est retenue, sauf si sa force est ≥ 75.
+- **Page « 🧭 Avis »** : chaque avis actif avec sa conviction, son ancienneté, sa variation depuis l'avis, son
+  invalidation, ses objectifs, le détail des trois parts du score et les changements en observation.

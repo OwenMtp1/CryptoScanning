@@ -5,9 +5,11 @@ const WEBHOOK = "https://discord.com/api/webhooks/123/tok_EN-secret";
 const SITE = "https://crypto-radar.pages.dev";
 
 /** Bot storage. By default the tests check one message per alert (grouped sending off). */
-function storage(opts: { batch?: boolean; point?: boolean } = {}) {
+function storage(opts: { batch?: boolean; point?: boolean; mode?: "conseil" | "complet" } = {}) {
   const m = new Map<string, unknown>();
-  if (!opts.batch) m.set("prefs", { batch: { enabled: false, everyMin: 5, maxPerMessage: 10 }, marketPoint: { enabled: opts.point ?? false, everyMin: 60 } });
+  // The tests check the raw alerts ("complet" mode) unless they say otherwise.
+  if (!opts.batch) m.set("prefs", { batch: { enabled: false, everyMin: 5, maxPerMessage: 10 }, marketPoint: { enabled: opts.point ?? false, everyMin: 60 }, mode: opts.mode ?? "complet" });
+  else m.set("prefs", { mode: opts.mode ?? "complet" });
   return { m, get: async (k: string) => structuredClone(m.get(k)), put: async (e: Record<string, unknown>) => void Object.entries(e).forEach(([k, v]) => m.set(k, structuredClone(v))) };
 }
 
@@ -347,11 +349,18 @@ describe("Discord worker", () => {
 
   it("prefs helpers", () => {
     const s = { id: "x", ts: 0, coin: "SOL", coinName: null, kind: "PUMP_EARLY" as const, direction: "bullish" as const, source: "binance" as const, strength: 60, title: "t", reasons: [], metrics: {}, priceUsd: 1, url: null };
-    expect(passesPrefs(defaultPrefs(), s, null)).toBe(true);
-    expect(passesPrefs({ ...defaultPrefs(), minStrength: 70 }, s, null)).toBe(false);
-    expect(passesPrefs({ ...defaultPrefs(), minHitRate: 50 }, s, 40)).toBe(false);
-    expect(passesPrefs({ ...defaultPrefs(), minHitRate: 50 }, s, null)).toBe(true); // not measured yet
-    expect(passesPrefs({ ...defaultPrefs(), includeCoins: ["ETH"] }, s, null)).toBe(false);
+    // Default "conseil" mode: raw alerts stay on the site, opinions and listings go to Discord.
+    expect(passesPrefs(defaultPrefs(), s, null)).toBe(false);
+    expect(passesPrefs(defaultPrefs(), { ...s, kind: "TREND_UP", source: "verdict" }, null)).toBe(true);
+    expect(passesPrefs(defaultPrefs(), { ...s, kind: "NEW_LISTING" }, null)).toBe(true);
+    const all = { ...defaultPrefs(), mode: "complet" as const };
+    expect(passesPrefs(all, s, null)).toBe(true);
+    expect(passesPrefs({ ...all, minStrength: 70 }, s, null)).toBe(false);
+    expect(passesPrefs({ ...all, minHitRate: 50 }, s, 40)).toBe(false);
+    expect(passesPrefs({ ...all, minHitRate: 50 }, s, null)).toBe(true); // not measured yet
+    expect(passesPrefs({ ...all, includeCoins: ["ETH"] }, s, null)).toBe(false);
+    expect(sanitizePrefs({ minStrength: 0, mode: "complet" }, 1)!.mode).toBe("complet");
+    expect(sanitizePrefs({ minStrength: 0, mode: "n'importe" }, 1)!.mode).toBe("conseil");
     expect(sanitizePrefs({ minStrength: 10, directions: [] }, 1)!.directions).toEqual(["bullish", "bearish", "neutral"]);
   });
 
@@ -451,7 +460,7 @@ describe("Discord worker", () => {
     expect(list.signals.some((x) => x.id === "site-s3")).toBe(false);
     expect(posted.some((p) => p.body.includes("ABCX décolle"))).toBe(true);
     // Filtered by the settings → said so.
-    await obj.fetch(new Request("https://radar/prefs", { method: "POST", headers: { "x-relay-key": "k-123" }, body: JSON.stringify({ ...defaultPrefs(), minStrength: 50 }) }));
+    await obj.fetch(new Request("https://radar/prefs", { method: "POST", headers: { "x-relay-key": "k-123" }, body: JSON.stringify({ ...defaultPrefs(), mode: "complet", minStrength: 50 }) }));
     const r2 = await relay([{ ...sig, id: "s4", coin: "DEFX" }]);
     expect(r2.results.s4).toBe("filtered");
   });
@@ -571,5 +580,47 @@ describe("Discord worker", () => {
     }
     expect(accepted).toBe(599); // 600 per 10 min, one already used
     expect(capped).toBe(51);
+  });
+
+  it("complet mode holds back an opposite alert on the same coin within 30 min (unless strong)", async () => {
+    vi.useFakeTimers({ now: Date.UTC(2026, 8, 27, 12, 0), toFake: ["Date"] });
+    posted.length = 0;
+    vi.stubGlobal("fetch", vi.fn(async (u: string, i?: { method?: string; body?: string }) => fakeFetch(u, i)));
+    const obj = new RadarState({ storage: storage() } as never, { RADAR: {} as never, DISCORD_WEBHOOK_URL: WEBHOOK, SITE_URL: SITE, RELAY_KEY: "k" });
+    const relay = async (signals: unknown[]) => (await (await obj.fetch(new Request("https://radar/relay", { method: "POST", headers: { "x-relay-key": "k" }, body: JSON.stringify({ signals }) }))).json()) as { results: Record<string, string> };
+    const base = { ts: Date.now(), coin: "FLIPX", source: "binance", priceUsd: 1, reasons: [], url: null };
+    expect((await relay([{ ...base, id: "a", kind: "PUMP_EARLY", direction: "bullish", strength: 60, title: "FLIPX décolle" }])).results.a).toBe("sent");
+    vi.setSystemTime(Date.now() + 2 * 60_000);
+    expect((await relay([{ ...base, ts: Date.now(), id: "b", kind: "DUMP_EARLY", direction: "bearish", strength: 60, title: "FLIPX chute" }])).results.b).toBe("flip");
+    expect((await relay([{ ...base, ts: Date.now(), id: "c", kind: "CRASH_1H", direction: "bearish", strength: 85, title: "FLIPX krach" }])).results.c).toBe("sent");
+    // A relayed verdict is refused: the official opinion is the bot's.
+    expect((await relay([{ ...base, ts: Date.now(), id: "d", kind: "TREND_UP", direction: "bullish", source: "verdict", strength: 70, title: "avis" }])).results.d).toBe("refused:type");
+  });
+
+  it("conseil mode (default): Discord gets one confirmed trend opinion with levels, not the raw alerts", async () => {
+    vi.useFakeTimers({ now: Date.UTC(2026, 8, 28, 12, 0), toFake: ["Date"] });
+    posted.length = 0;
+    vi.stubGlobal("fetch", vi.fn(async (u: string, i?: { method?: string; body?: string }) => fakeFetch(u, i)));
+    klines1h = uptrend();
+    try {
+      const st = storage({ mode: "conseil" });
+      const env = { RADAR: {} as never, DISCORD_WEBHOOK_URL: WEBHOOK, SITE_URL: SITE };
+      const run = () => scan3(() => new RadarState({ storage: st } as never, env));
+      price = 1;
+      await run(); // warm-up
+      for (let k = 0; k < 6; k++) {
+        vi.setSystemTime(Date.now() + 5 * 60_000);
+        price = 1 + k * 0.05; // moves that make raw "décolle" alerts
+        await run();
+      }
+      const bodies = posted.map((p) => p.body).join(" ");
+      expect(bodies).toMatch(/avis HAUSSIER/);
+      expect(bodies).toContain("l'avis tombe si le prix passe sous");
+      expect(bodies).not.toContain("décolle"); // raw alerts stay on the site
+      const board = (await (await new RadarState({ storage: st } as never, env).fetch(new Request("https://radar/verdicts"))).json()) as { verdicts: { state: string }[] };
+      expect(board.verdicts.some((v) => v.state === "UP" || v.state === "STRONG_UP")).toBe(true);
+    } finally {
+      klines1h = null;
+    }
   });
 });

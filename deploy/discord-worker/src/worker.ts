@@ -104,8 +104,8 @@ export const BINANCE_HOSTS = [
   "https://www.binance.com",
 ];
 const FULL_MS = 5 * 60_000;
-export const ALL_KINDS: IntelKind[] = ["PUMP_EARLY", "DUMP_EARLY", "VOLUME_SURGE", "BREAKOUT_24H_HIGH", "BREAKDOWN_24H_LOW", "TOP_MOVER_1H", "CRASH_1H", "VOLUME_MCAP_ANOMALY", "NEAR_ATH", "TRENDING_ENTRY", "FUNDING_EXTREME_LONG", "FUNDING_EXTREME_SHORT", "OPEN_INTEREST_SURGE", "DEX_NEW_POOL_TRACTION", "DEX_TRENDING_PUMP", "DEX_RUG_RISK", "NEWS_BULLISH", "NEWS_BEARISH", "NEW_LISTING", "LIQUIDATIONS_LONG", "LIQUIDATIONS_SHORT", "SOCIAL_BUZZ", "LEVERAGE_LONG", "LEVERAGE_SHORT", "SETUP_LONG", "SETUP_SHORT", "CONFLUENCE"];
-export const ALL_SOURCES: IntelSource[] = ["coinbase", "binance", "exchanges", "coingecko", "trending", "derivatives", "dex", "news", "social", "leverage", "setup"];
+export const ALL_KINDS: IntelKind[] = ["PUMP_EARLY", "DUMP_EARLY", "VOLUME_SURGE", "BREAKOUT_24H_HIGH", "BREAKDOWN_24H_LOW", "TOP_MOVER_1H", "CRASH_1H", "VOLUME_MCAP_ANOMALY", "NEAR_ATH", "TRENDING_ENTRY", "FUNDING_EXTREME_LONG", "FUNDING_EXTREME_SHORT", "OPEN_INTEREST_SURGE", "DEX_NEW_POOL_TRACTION", "DEX_TRENDING_PUMP", "DEX_RUG_RISK", "NEWS_BULLISH", "NEWS_BEARISH", "NEW_LISTING", "LIQUIDATIONS_LONG", "LIQUIDATIONS_SHORT", "SOCIAL_BUZZ", "LEVERAGE_LONG", "LEVERAGE_SHORT", "SETUP_LONG", "SETUP_SHORT", "TREND_UP", "TREND_DOWN", "TREND_EXIT", "CONFLUENCE"];
+export const ALL_SOURCES: IntelSource[] = ["coinbase", "binance", "exchanges", "coingecko", "trending", "derivatives", "dex", "news", "social", "leverage", "setup", "verdict"];
 const KINDS = new Set<IntelKind>(ALL_KINDS);
 const SOURCES = new Set<IntelSource>(ALL_SOURCES);
 /** Leverage settings: indications (LONG / SHORT) and liquidations have their own rules. */
@@ -150,6 +150,11 @@ export interface DiscordPrefs {
   leverage: LeveragePrefs;
   /** Grouped sending, every channel: one message every `everyMin` min with up to `maxPerMessage` alerts. */
   batch: { enabled: boolean; everyMin: number; maxPerMessage: number };
+  /**
+   * "conseil": only real changes of opinion (trend verdicts), new listings and the « Point marché ».
+   * "complet": every signal (contradictory alerts on a coin within 30 min are held back).
+   */
+  mode: "conseil" | "complet";
   /** « Point marché » (overview message) every `everyMin` min. */
   marketPoint: { enabled: boolean; everyMin: number };
   updatedAt: number | null;
@@ -180,7 +185,7 @@ export function defaultLeveragePrefs(): LeveragePrefs {
 }
 
 export function defaultPrefs(minStrength = 0): DiscordPrefs {
-  return { enabled: true, minStrength, kinds: [], sources: [], directions: ["bullish", "bearish", "neutral"], includeCoins: [], excludeCoins: [], minHitRate: null, leverage: defaultLeveragePrefs(), batch: { enabled: true, everyMin: 5, maxPerMessage: 10 }, marketPoint: { enabled: true, everyMin: 60 }, updatedAt: null };
+  return { enabled: true, minStrength, kinds: [], sources: [], directions: ["bullish", "bearish", "neutral"], includeCoins: [], excludeCoins: [], minHitRate: null, leverage: defaultLeveragePrefs(), batch: { enabled: true, everyMin: 5, maxPerMessage: 10 }, marketPoint: { enabled: true, everyMin: 60 }, mode: "conseil", updatedAt: null };
 }
 
 /** Validate prefs sent by the site (strict, bounded). */
@@ -222,6 +227,7 @@ export function sanitizePrefs(x: unknown, now: number): DiscordPrefs | null {
     leverage,
     batch,
     marketPoint,
+    mode: o.mode === "complet" ? "complet" : "conseil",
     enabled: o.enabled !== false,
     minStrength: Math.round(ms),
     kinds: list(o.kinds, (k) => KINDS.has(k as IntelKind)),
@@ -234,9 +240,14 @@ export function sanitizePrefs(x: unknown, now: number): DiscordPrefs | null {
   };
 }
 
+/** What the "conseil" mode keeps: changes of opinion and new listings (plus the « Point marché »). */
+export const CONSEIL_KINDS = new Set<IntelKind>(["TREND_UP", "TREND_DOWN", "TREND_EXIT", "NEW_LISTING"]);
+
 export function passesPrefs(p: DiscordPrefs, s: IntelSignal, hitRate: number | null): boolean {
   if (!p.enabled) return false;
+  // The leverage channel follows its own panel, in both modes.
   if (LEVERAGE_KINDS.has(s.kind)) return passesLeverage(p.leverage ?? defaultLeveragePrefs(), s);
+  if ((p.mode ?? "conseil") === "conseil" && !CONSEIL_KINDS.has(s.kind)) return false;
   if (s.strength < p.minStrength) return false;
   if (p.kinds.length && !p.kinds.includes(s.kind)) return false;
   if (p.sources.length && !p.sources.includes(s.source)) return false;
@@ -312,7 +323,7 @@ async function readCapped(req: Request, max: number): Promise<string | null> {
  * Fate of a signal on Discord: sent (queued to a channel), dup (the same event from the same source was
  * sent less than 30 min ago), filtered (Discord settings), cold (bot warming up), nochannel, or refused:<reason>.
  */
-export type DiscordMark = "sent" | "dup" | "filtered" | "cold" | "nochannel" | `refused:${string}`;
+export type DiscordMark = "sent" | "dup" | "flip" | "conseil" | "filtered" | "cold" | "nochannel" | `refused:${string}`;
 
 /** Why a relayed signal was refused (counted and shown on the site). */
 export type RelayReject = "format" | "type" | "sens" | "force" | "trop ancien" | "déjà envoyé" | "trop de signaux";
@@ -339,6 +350,8 @@ export function sanitizeRelayed(x: unknown, now: number): IntelSignal | RelayRej
   const title = typeof s.title === "string" ? str(plain(s.title), 256) : null;
   if (!id || !coin || !/^[\p{L}\p{N}._$-]+$/u.test(coin) || !title) return "format";
   if (!KINDS.has(s.kind as IntelKind) || !SOURCES.has(s.source as IntelSource)) return "type";
+  // The official trend verdict is the bot's own (one opinion, not one per open page).
+  if (s.source === "verdict" || String(s.kind).startsWith("TREND_")) return "type";
   if (s.direction !== "bullish" && s.direction !== "bearish" && s.direction !== "neutral") return "sens";
   const strength = Number(s.strength);
   const ts = Number(s.ts);
@@ -373,6 +386,8 @@ export class RadarState {
     binanceHost: number;
     /** What happened to each recent signal on Discord (shown next to it on the site). */
     marks: Map<string, { st: DiscordMark; at: number }>;
+    /** Last direction sent per coin (anti-contradiction). */
+    lastDir: Map<string, { dir: Direction; ts: number }>;
     binanceDiag: { host: string | null; okAt: number | null; lastError: string | null; webError?: string | null; tried: Record<string, string> };
     /** Since when no Binance access works (null = it works), and when the Discord warning was last sent. */
     binanceDownSince: number | null;
@@ -485,6 +500,7 @@ export class RadarState {
       const L = await this.run(() => this.load());
       return Response.json({ signals: L.svc.engine.recentSignals({ since, limit: 1500 }).map((x) => ({ ...x, hitRate1h: L.svc.hitRateOf(x), discord: L.marks.get(x.id)?.st ?? null })) });
     }
+    if (path === "/verdicts") return Response.json((await this.state.storage.get("verdictBoard")) ?? { at: null, count: 0, verdicts: [] });
     if (path === "/setups") return Response.json((await this.state.storage.get("setupBoard")) ?? { at: null, count: 0, setups: [] });
     if (path === "/leverage") return Response.json((await this.state.storage.get("leverageBoard")) ?? { at: null, markets: [], context: null });
     return Response.json((await this.state.storage.get<Status>("status")) ?? { message: "Aucune analyse pour l'instant : la première a lieu dans les 5 minutes suivant le déploiement." });
@@ -557,6 +573,7 @@ export class RadarState {
       binanceBackoffUntil: 0,
       binanceHost: meta.binanceHost ?? 0,
       marks: new Map(Object.entries(meta.marks ?? {})),
+      lastDir: new Map(),
       binanceDiag: { host: null, okAt: null, lastError: null, webError: null, tried: {} } as { host: string | null; okAt: number | null; lastError: string | null; webError?: string | null; tried: Record<string, string> },
       binanceDownSince: meta.binanceDownSince ?? null,
       binanceAlertAt: meta.binanceAlertAt ?? 0,
@@ -599,7 +616,7 @@ export class RadarState {
         },
         view: () => channels[0]?.n.view() ?? null,
       },
-      enabledSources: ["binance", "coinbase", "exchanges", "coingecko", "trending", "derivatives", "dex", "news", "social", "leverage", "setup"],
+      enabledSources: ["binance", "coinbase", "exchanges", "coingecko", "trending", "derivatives", "dex", "news", "social", "leverage", "setup", "verdict"],
       now: () => this.clock,
     });
     loaded.svc.restore(await st.get<IntelSavedState>("intel"));
@@ -635,12 +652,18 @@ export class RadarState {
     const last = L.seen.get(key);
     if (last !== undefined && this.clock - last < 30 * 60_000) return mark("dup");
     L.seen.set(key, this.clock);
+    // Opposite alert on the same coin less than 30 min after the last one sent: held back unless strong.
+    if (s.direction !== "neutral" && !CONSEIL_KINDS.has(s.kind) && !LEVERAGE_KINDS.has(s.kind)) {
+      const lastDir = L.lastDir.get(s.coin);
+      if (lastDir && lastDir.dir !== s.direction && this.clock - lastDir.ts < 30 * 60_000 && s.strength < 75) return mark("flip");
+    }
     if (!passesPrefs(L.prefs, s, L.svc.hitRateOf(s))) {
       L.filtered++;
-      return mark("filtered");
+      return mark((L.prefs.mode ?? "conseil") === "conseil" && !CONSEIL_KINDS.has(s.kind) && !LEVERAGE_KINDS.has(s.kind) ? "conseil" : "filtered");
     }
     this.signalsThisRun++;
     L.sentLog.push(this.clock);
+    if (s.direction !== "neutral") L.lastDir.set(s.coin, { dir: s.direction, ts: this.clock });
     const lev = L.channels.find((c) => c.id === "leverage");
     const note = (channel: string) => {
       L.recentSent.push({ ts: this.clock, dir: s.direction, kind: s.kind, coin: s.coin, channel, src: s.source });
@@ -1203,6 +1226,7 @@ export class RadarState {
       entries.tracker = L.svc.tracker.exportRecent(3000);
       entries.leverageBoard = L.svc.leverage();
       entries.setupBoard = L.svc.setups({ limit: 150 });
+      entries.verdictBoard = L.svc.verdictBoard();
     } else {
       // Fast runs only persist cooldowns + recent signals (small).
       const e = L.svc.engine.exportState();
@@ -1260,7 +1284,7 @@ export default {
       if (body === null) return Response.json({ ok: false, error: "trop gros" }, { status: 413 });
       return stub(env).fetch("https://radar/prefs", { method: "POST", headers: { "x-relay-key": req.headers.get("x-relay-key") ?? "", "content-type": "application/json" }, body });
     }
-    if (req.method === "GET" && ["/prefs", "/stats", "/signals", "/leverage", "/setups"].includes(url.pathname)) {
+    if (req.method === "GET" && ["/prefs", "/stats", "/signals", "/leverage", "/setups", "/verdicts"].includes(url.pathname)) {
       const r = await stub(env).fetch(`https://radar${url.pathname}${url.search}`);
       return new Response(r.body, { status: r.status, headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" } });
     }

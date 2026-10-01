@@ -27,6 +27,7 @@ interface Prefs {
   leverage?: LeveragePrefs;
   batch?: { enabled: boolean; everyMin: number; maxPerMessage: number };
   marketPoint?: { enabled: boolean; everyMin: number };
+  mode?: "conseil" | "complet";
   updatedAt: number | null;
 }
 interface LeveragePrefs {
@@ -60,6 +61,7 @@ const GROUPS: { label: string; kinds: IntelKind[] }[] = [
   { label: "Levier et dérivés", kinds: ["LEVERAGE_LONG", "LEVERAGE_SHORT", "LIQUIDATIONS_LONG", "LIQUIDATIONS_SHORT", "FUNDING_EXTREME_LONG", "FUNDING_EXTREME_SHORT", "OPEN_INTEREST_SURGE"] },
   { label: "Nouveautés et attention", kinds: ["NEW_LISTING", "SOCIAL_BUZZ", "NEWS_BULLISH", "NEWS_BEARISH"] },
   { label: "DEX (très risqué)", kinds: ["DEX_NEW_POOL_TRACTION", "DEX_TRENDING_PUMP", "DEX_RUG_RISK"] },
+  { label: "Avis de tendance", kinds: ["TREND_UP", "TREND_DOWN", "TREND_EXIT"] },
   { label: "Setups de trader (plan complet)", kinds: ["SETUP_LONG", "SETUP_SHORT"] },
   { label: "Plusieurs sources d'accord", kinds: ["CONFLUENCE"] },
 ];
@@ -167,6 +169,28 @@ export default function DiscordPage() {
           Pour enregistrer, entre d&apos;abord ton <strong>code de relais</strong> (le secret <code>RELAY_KEY</code> du bot) : page <a href="#sources" className="underline">Sources</a> → carte Discord.
         </div>
       )}
+      <Card title="Mode d'envoi">
+        <div className="grid gap-2 sm:grid-cols-2">
+          {(
+            [
+              ["conseil", "🧭 Mode conseil (recommandé)", "Seulement les changements d'avis de tendance (haussier / baissier / fin d'avis, avec niveaux et objectifs), les nouveaux listings et le Point marché. Pas d'alertes contradictoires."],
+              ["complet", "📡 Mode complet", "Toutes les alertes brutes (décollages, chutes, volumes, actus…) en plus des avis. Une alerte de sens inverse sur la même crypto moins de 30 min après est retenue, sauf si elle est forte (≥ 75)."],
+            ] as const
+          ).map(([k, l, d]) => (
+            <button key={k} type="button" onClick={() => setP({ ...p, mode: k })} className={`rounded-lg border p-3 text-left ${(p.mode ?? "conseil") === k ? "border-violet-500 bg-violet-950/40" : "border-slate-700 bg-slate-900/40 hover:border-slate-500"}`}>
+              <div className="text-sm font-semibold text-slate-100">{l}</div>
+              <div className="mt-1 text-xs text-slate-400">{d}</div>
+            </button>
+          ))}
+        </div>
+        <p className="mt-2 text-[11px] text-slate-500">Le salon levier suit toujours son propre panneau (plus bas). Les réglages ci-dessous (force, sources, cryptos…) s&apos;appliquent dans les deux modes.</p>
+        <div className="mt-3">
+          <button onClick={() => void save()} disabled={busy} className="rounded bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-500 disabled:opacity-40">
+            {busy ? "Enregistrement…" : "Enregistrer"}
+          </button>
+        </div>
+      </Card>
+
       <Card title="Ce que le bot envoie sur Discord">
         <label className="flex items-center gap-2 text-sm">
           <input type="checkbox" checked={p.enabled} onChange={(e) => setP({ ...p, enabled: e.target.checked })} />
